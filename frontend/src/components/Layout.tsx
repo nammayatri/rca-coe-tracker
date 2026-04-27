@@ -397,16 +397,15 @@ function UserMenu() {
             leading={<LogOut className="w-4 h-4 text-slate-500" />}
             onSelect={() => {
               close();
-              // Pomerium owns the session — clearing requires a round-trip
-              // to its sign-out endpoint. After it clears the cookie it
-              // bounces us back to "/", where the next request 401s and
-              // Pomerium re-prompts SSO.
-              // After Pomerium clears the session, land on /logged-out
-              // (a public Pomerium route) so the user sees a friendly
-              // page with a "Log in again" button instead of Pomerium's
-              // own /.pomerium/ landing.
-              const redirectUri = encodeURIComponent(window.location.origin + '/logged-out');
-              window.location.href = `/.pomerium/sign_out?pomerium_redirect_uri=${redirectUri}`;
+              // App-level sign out: navigate directly to our /logged-out
+              // page. We deliberately do NOT hit Pomerium's
+              // /.pomerium/sign_out — that endpoint clears the global SSO
+              // cookie (signing the user out of every Pomerium app at
+              // once) AND ignores `pomerium_redirect_uri` for its final
+              // landing page, so the user ends up on Pomerium's home
+              // page or Google sign-in. Soft sign-out is the right UX
+              // for "I'm done with this tool".
+              window.location.href = '/logged-out';
             }}
           >
             Sign out
