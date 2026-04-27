@@ -65,12 +65,22 @@ def _read_pomerium_identity(request: Request) -> tuple[str, str] | None:
     # 2. Newer Pomerium: a single signed JWT assertion carries every claim.
     jwt = headers.get("x-pomerium-jwt-assertion") or headers.get("x-pomerium-assertion")
     if jwt:
-        claims = _decode_jwt_claims(jwt)
-        if claims:
-            email = claims.get("email") or claims.get("sub")
-            if email:
-                name = claims.get("name") or claims.get("user") or email.split("@")[0]
-                return email.lower(), name
+        claims = _decode_jwt_claims(jwt) or {}
+        # Look for email in the standard places. NEVER fall back to sub — that's
+        # a numeric IdP user id, not an email.
+        email = (
+            claims.get("email")
+            or claims.get("preferred_username")
+            or claims.get("upn")
+        )
+        if email and "@" in email:
+            name = (
+                claims.get("name")
+                or claims.get("given_name")
+                or claims.get("user")
+                or email.split("@")[0]
+            )
+            return email.lower(), name
 
     return None
 

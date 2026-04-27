@@ -72,15 +72,31 @@ async def version():
 
 @app.get("/api/_debug/headers")
 async def debug_headers(request: Request):
-    """Echo proxy-relevant headers so we can see what the upstream proxy
-    actually sends. Unauthenticated by design — this is only reachable
-    behind the trusted proxy."""
-    interesting = {}
+    """Echo proxy-relevant headers + decoded JWT claims so we can see what
+    the upstream proxy is actually sending. Unauthenticated by design —
+    only reachable behind the trusted proxy."""
+    from app.auth import _decode_jwt_claims
+
+    interesting: dict[str, str] = {}
+    jwt_token: str | None = None
     for k, v in request.headers.items():
         kl = k.lower()
         if kl.startswith(("x-pomerium", "x-forwarded", "x-auth-request", "x-real-ip")):
             interesting[k] = v if len(v) <= 256 else v[:256] + "…"
-    return {"headers": interesting}
+        if kl in ("x-pomerium-jwt-assertion", "x-pomerium-assertion"):
+            jwt_token = v
+
+    claims: dict | None = None
+    if jwt_token:
+        decoded = _decode_jwt_claims(jwt_token)
+        if decoded:
+            # Redact noisy / sensitive raw values; keep keys + scalar values for shape.
+            claims = {
+                k: (v if not isinstance(v, str) or len(v) <= 256 else v[:256] + "…")
+                for k, v in decoded.items()
+            }
+
+    return {"headers": interesting, "jwt_claims": claims}
 
 
 _static_dir = Path(__file__).resolve().parent.parent / "static"

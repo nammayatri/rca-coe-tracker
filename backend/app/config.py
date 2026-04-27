@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     slack_bot_token: str = ""
     slack_signing_secret: str = ""
 
-    app_version: str = "1.0.1"
+    app_version: str = "1.0.2"
     app_commit: str = "dev"
 
     ai_provider: str = "openai"
