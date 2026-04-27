@@ -67,7 +67,8 @@ export default function UserAutocomplete({
       const el = containerRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
-      setAnchor({ top: r.bottom + window.scrollY + 4, left: r.left + window.scrollX, width: r.width });
+      // Menu uses position: fixed — viewport coords only, no scroll offsets.
+      setAnchor({ top: r.bottom + 4, left: r.left, width: r.width });
     };
     update();
     window.addEventListener('resize', update);

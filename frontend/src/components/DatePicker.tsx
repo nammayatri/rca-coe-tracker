@@ -193,12 +193,10 @@ export default function DatePicker({
       if (!el) return;
       const r = el.getBoundingClientRect();
       const measuredWidth = 304; // calendar width
-      const left =
-        align === 'right'
-          ? r.right + window.scrollX - measuredWidth
-          : r.left + window.scrollX;
+      // Popover is position: fixed (viewport-relative) — no scroll offsets.
+      const left = align === 'right' ? r.right - measuredWidth : r.left;
       setAnchor({
-        top: r.bottom + window.scrollY + 6,
+        top: r.bottom + 6,
         left,
         width: measuredWidth,
       });

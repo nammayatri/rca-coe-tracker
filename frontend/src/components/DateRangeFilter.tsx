@@ -212,11 +212,12 @@ export default function DateRangeFilter({ from, to, onChange }: DateRangeFilterP
       if (!el) return;
       const r = el.getBoundingClientRect();
       const measuredWidth = 560;
-      // Right-align the popover under the trigger.
-      let left = r.right + window.scrollX - measuredWidth;
+      // Popover is position: fixed (viewport-relative). Right-align under
+      // the trigger; clamp to viewport edge.
+      let left = r.right - measuredWidth;
       if (left < 8) left = 8;
       setAnchor({
-        top: r.bottom + window.scrollY + 6,
+        top: r.bottom + 6,
         left,
         width: measuredWidth,
       });

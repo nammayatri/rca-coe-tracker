@@ -50,12 +50,11 @@ export default function Dropdown({
       if (!el) return;
       const r = el.getBoundingClientRect();
       const measuredWidth = width ?? Math.max(r.width, 180);
-      const left =
-        align === 'right'
-          ? r.right + window.scrollX - measuredWidth
-          : r.left + window.scrollX;
+      // The menu is position: fixed (viewport-relative). Use viewport coords
+      // straight from getBoundingClientRect — do NOT add scrollX/scrollY.
+      const left = align === 'right' ? r.right - measuredWidth : r.left;
       setAnchor({
-        top: r.bottom + window.scrollY + 6,
+        top: r.bottom + 6,
         left,
         width: measuredWidth,
       });

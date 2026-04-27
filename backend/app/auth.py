@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import get_db
 from app.models.user import User
+from app.services import user_enrich
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,13 @@ async def get_current_user(
         )
 
     user_row = (await db.execute(select(User).where(User.email == email))).scalar_one()
+
+    # First-login enrichment: if we don't have a Slack id for this user yet,
+    # async-resolve their real name + slack_id from Slack. Fire-and-forget
+    # so the request isn't blocked on the Slack round-trip.
+    if not user_row.slack_id:
+        user_enrich.maybe_enrich(email)
+
     return UserCtx(email=email, name=name, is_admin=bool(user_row.is_admin))
 
 
