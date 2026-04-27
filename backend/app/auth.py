@@ -1,3 +1,6 @@
+import base64
+import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -10,6 +13,8 @@ from app.config import settings
 from app.database import get_db
 from app.models.user import User
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class UserCtx:
@@ -18,22 +23,56 @@ class UserCtx:
     is_admin: bool
 
 
+def _b64url_pad(s: str) -> bytes:
+    # JWT base64url segments are unpadded; restore = padding to a multiple of 4.
+    return (s + "=" * (-len(s) % 4)).encode("ascii")
+
+
+def _decode_jwt_claims(token: str) -> dict | None:
+    """Decode a JWT *without* verifying its signature. The request already
+    passed the trusted upstream proxy, so we only need the claims for identity.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return None
+        payload = base64.urlsafe_b64decode(_b64url_pad(parts[1]))
+        return json.loads(payload)
+    except Exception:
+        return None
+
+
 def _read_pomerium_identity(request: Request) -> tuple[str, str] | None:
     headers = request.headers
+
+    # 1. Direct claim headers (older Pomerium, oauth2-proxy, custom proxies).
     email = (
         headers.get("x-pomerium-claim-email")
         or headers.get("x-pomerium-user-email")
         or headers.get("x-forwarded-email")
+        or headers.get("x-auth-request-email")
     )
-    if not email:
-        return None
-    name = (
-        headers.get("x-pomerium-claim-name")
-        or headers.get("x-pomerium-user-name")
-        or headers.get("x-forwarded-user")
-        or email.split("@")[0]
-    )
-    return email.lower(), name
+    if email:
+        name = (
+            headers.get("x-pomerium-claim-name")
+            or headers.get("x-pomerium-user-name")
+            or headers.get("x-forwarded-user")
+            or headers.get("x-auth-request-user")
+            or email.split("@")[0]
+        )
+        return email.lower(), name
+
+    # 2. Newer Pomerium: a single signed JWT assertion carries every claim.
+    jwt = headers.get("x-pomerium-jwt-assertion") or headers.get("x-pomerium-assertion")
+    if jwt:
+        claims = _decode_jwt_claims(jwt)
+        if claims:
+            email = claims.get("email") or claims.get("sub")
+            if email:
+                name = claims.get("name") or claims.get("user") or email.split("@")[0]
+                return email.lower(), name
+
+    return None
 
 
 async def get_current_user(
@@ -47,7 +86,16 @@ async def get_current_user(
             settings.dev_fake_name or settings.dev_fake_email.split("@")[0],
         )
     if identity is None:
-        raise HTTPException(status_code=401, detail="missing pomerium identity")
+        # Help future debugging by surfacing which proxy headers we DID see.
+        seen = sorted(
+            k for k in request.headers.keys()
+            if k.lower().startswith(("x-pomerium", "x-forwarded", "x-auth-request"))
+        )
+        logger.warning("missing pomerium identity; saw proxy headers: %s", seen or "(none)")
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "missing pomerium identity", "proxy_headers_seen": seen},
+        )
 
     email, name = identity
     seed_admin = email in settings.admin_email_list

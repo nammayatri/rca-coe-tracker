@@ -2,7 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -68,6 +68,19 @@ async def version():
         "ai_model": settings.ai_model,
         "ai_fast_model": settings.ai_fast_model,
     }
+
+
+@app.get("/api/_debug/headers")
+async def debug_headers(request: Request):
+    """Echo proxy-relevant headers so we can see what the upstream proxy
+    actually sends. Unauthenticated by design — this is only reachable
+    behind the trusted proxy."""
+    interesting = {}
+    for k, v in request.headers.items():
+        kl = k.lower()
+        if kl.startswith(("x-pomerium", "x-forwarded", "x-auth-request", "x-real-ip")):
+            interesting[k] = v if len(v) <= 256 else v[:256] + "…"
+    return {"headers": interesting}
 
 
 _static_dir = Path(__file__).resolve().parent.parent / "static"
