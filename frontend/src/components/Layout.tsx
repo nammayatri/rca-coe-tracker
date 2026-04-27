@@ -160,10 +160,16 @@ function SidebarContent({
   const location = useLocation();
   const onListPage = location.pathname === '/';
   const mineActive = onListPage && searchParams.get('mine') === '1';
-  const allActive = onListPage && !mineActive && !searchParams.get('severity') && !searchParams.get('status');
+  const followupsActive = onListPage && searchParams.get('followups') === '1';
+  const allActive =
+    onListPage &&
+    !mineActive &&
+    !followupsActive &&
+    !searchParams.get('severity') &&
+    !searchParams.get('status');
 
   const sevActive = (sev: string) =>
-    onListPage && searchParams.get('severity') === sev && !mineActive;
+    onListPage && searchParams.get('severity') === sev && !mineActive && !followupsActive;
 
   return (
     <>

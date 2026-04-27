@@ -41,7 +41,8 @@ export default function Avatar({ name, size = 'sm', className = '' }: AvatarProp
   return (
     <div
       className={`rounded-full bg-gradient-to-br ${gradient} flex items-center justify-center font-semibold text-white shrink-0 ${sizeMap[size]} ${className}`}
-      aria-hidden
+      title={safeName === '?' ? undefined : safeName}
+      aria-label={safeName === '?' ? undefined : safeName}
     >
       {initial}
     </div>
