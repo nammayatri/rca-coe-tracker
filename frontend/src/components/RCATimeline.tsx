@@ -35,18 +35,23 @@ function humanizeStatus(value: string): string {
   return statusLabels[value as RCAStatus] ?? value;
 }
 
+function shortHandle(value: string | null | undefined): string {
+  if (!value) return 'someone';
+  return value.split('@')[0] || value;
+}
+
 function describeAction(h: RCAHistoryEntry): string {
   switch (h.action) {
     case 'created':
       return 'created this RCA';
     case 'status_changed': {
       const to = h.to_value ? humanizeStatus(h.to_value) : '';
-      return `changed status to ${to}`.trim();
+      return to ? `changed status to ${to}` : 'changed status';
     }
     case 'assigned':
-      return `assigned ${h.to_value?.split('@')[0] ?? ''}`.trim();
+      return `assigned ${shortHandle(h.to_value)}`;
     case 'unassigned':
-      return `unassigned ${(h.to_value ?? h.from_value ?? '').split('@')[0] ?? ''}`.trim();
+      return `unassigned ${shortHandle(h.to_value ?? h.from_value)}`;
     case 'edited': {
       const field = h.from_value ? FIELD_HUMAN[h.from_value] ?? h.from_value : 'the RCA';
       if (h.from_value === 'severity' && h.to_value) {
