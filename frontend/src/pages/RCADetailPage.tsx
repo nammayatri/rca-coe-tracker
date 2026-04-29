@@ -31,6 +31,7 @@ import TagInput from '../components/TagInput';
 import Avatar from '../components/Avatar';
 import UserAutocomplete from '../components/UserAutocomplete';
 import ConfirmDialog from '../components/ConfirmDialog';
+import CloseRCAModal from '../components/CloseRCAModal';
 import Dropdown, { DropdownItem } from '../components/Dropdown';
 import PillRow from '../components/PillRow';
 import BlamelessBanner from '../components/BlamelessBanner';
@@ -189,6 +190,7 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
 
   const [showDelete, setShowDelete] = useState(false);
   const [showMeta, setShowMeta] = useState(false);
+  const [showClose, setShowClose] = useState(false);
 
   const [servicesDraft, setServicesDraft] = useState<string[]>(rca.services_affected);
   const [tsDraft, setTsDraft] = useState({
@@ -300,7 +302,30 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
   const changeStatus = (next: RCAStatus) => {
     if (!editable) return;
     if (next === rca.status) return;
+    // Closing requires a confirm + optional PR-link capture.
+    if (next === 'closed') {
+      setShowClose(true);
+      return;
+    }
     patch.mutate({ status: next });
+  };
+
+  const confirmClose = (prUrl: string | null) => {
+    const updates: UpdateRCAPatch = { status: 'closed' };
+    if (prUrl) {
+      const heading = '## Pull requests';
+      const body = rca.body || '';
+      if (body.includes(heading)) {
+        // Append to existing section.
+        updates.body = body.trimEnd() + `\n- ${prUrl}\n`;
+      } else {
+        const sep = body.trimEnd() ? body.trimEnd() + '\n\n' : '';
+        updates.body = `${sep}${heading}\n\n- ${prUrl}\n`;
+      }
+    }
+    patch.mutate(updates, {
+      onSuccess: () => setShowClose(false),
+    });
   };
 
   const changeSeverity = (next: RCASeverity | null) => {
@@ -756,10 +781,21 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
             <section className="bg-slate-50/70 rounded-2xl ring-1 ring-slate-200/60 p-4">
               <button
                 onClick={() => setShowMeta((v) => !v)}
-                className="w-full flex items-center justify-between text-[12px] font-semibold text-slate-600 hover:text-slate-900 uppercase tracking-[0.08em]"
+                className="w-full flex items-center justify-between gap-3 text-left group"
+                aria-expanded={showMeta}
               >
-                <span>Edit incident metadata</span>
-                <span className="text-slate-400">{showMeta ? '−' : '+'}</span>
+                <span className="inline-flex items-center gap-2">
+                  <span className="w-7 h-7 rounded-lg bg-white ring-1 ring-slate-200 flex items-center justify-center group-hover:ring-blue-300 transition-colors">
+                    <Pencil className="w-3.5 h-3.5 text-slate-500 group-hover:text-blue-600 transition-colors" />
+                  </span>
+                  <span className="text-[13.5px] font-semibold text-slate-800 group-hover:text-blue-700 transition-colors">
+                    Edit details
+                  </span>
+                  <span className="text-[11px] text-slate-400 hidden sm:inline">
+                    severity · environment · services · assignees · times
+                  </span>
+                </span>
+                <span className="text-slate-400 text-lg leading-none">{showMeta ? '−' : '+'}</span>
               </button>
               {showMeta && (
                 <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -851,6 +887,13 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
         title="Delete this RCA?"
         description="This will permanently remove the RCA and its history. This can't be undone."
         confirmLabel="Delete RCA"
+      />
+
+      <CloseRCAModal
+        open={showClose}
+        onClose={() => !patch.isPending && setShowClose(false)}
+        onConfirm={confirmClose}
+        pending={patch.isPending}
       />
     </div>
   );
