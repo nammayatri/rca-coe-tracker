@@ -410,17 +410,24 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
         </button>
 
         <div className="flex items-center gap-2">
-          {editable && (
+          {editable && !bodyEditing && (
             <button
               type="button"
               onClick={() => {
                 setBodyDraft(rca.body);
                 setBodyEditing(true);
+                // Wait one tick for the editor to mount, then scroll into view.
+                requestAnimationFrame(() => {
+                  document
+                    .getElementById('rca-body-editor')
+                    ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                });
               }}
-              className="inline-flex items-center gap-1.5 text-[12.5px] text-slate-600 hover:text-slate-900 px-2.5 py-1.5 rounded-lg hover:bg-slate-100 transition-colors active:scale-[0.97]"
+              className="inline-flex items-center gap-1.5 text-[13px] text-slate-700 hover:text-blue-700 bg-white hover:bg-blue-50 ring-1 ring-slate-200 hover:ring-blue-300 px-3 py-1.5 rounded-lg transition-all duration-150 active:scale-[0.97] font-medium"
+              title="Edit the RCA body — TL;DR, sections, action items, timeline"
             >
               <Pencil className="w-3.5 h-3.5" />
-              Edit body
+              Edit content
             </button>
           )}
           {(deletable || isAdmin) && (
@@ -712,16 +719,24 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
 
           {/* Body editor (full raw) */}
           {bodyEditing && (
-            <section className="bg-white rounded-2xl ring-1 ring-slate-200/60 p-5">
+            <section
+              id="rca-body-editor"
+              className="bg-white rounded-2xl ring-1 ring-slate-200/60 p-5 scroll-mt-20"
+            >
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-[10px] uppercase tracking-[0.08em] text-slate-500 font-semibold">
-                  Edit body (markdown)
-                </h3>
+                <div>
+                  <h3 className="text-[10px] uppercase tracking-[0.08em] text-slate-500 font-semibold">
+                    Edit content (markdown)
+                  </h3>
+                  <p className="text-[12px] text-slate-500 mt-0.5">
+                    Edit any section — TL;DR, summary, 5 Whys, action items, timeline. Save commits to the body field.
+                  </p>
+                </div>
               </div>
               <textarea
                 value={bodyDraft}
                 onChange={(e) => setBodyDraft(e.target.value)}
-                rows={20}
+                rows={24}
                 placeholder="Markdown supported"
                 className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm soft-focus focus:outline-none focus:border-blue-400 font-mono leading-relaxed"
                 autoFocus

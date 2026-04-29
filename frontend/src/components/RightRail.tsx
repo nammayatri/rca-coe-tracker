@@ -51,12 +51,14 @@ export default function RightRail({ rca }: RightRailProps) {
     .slice(0, 6);
 
   const ic = rca.assignees[0];
+  const coHandlers = rca.assignees.slice(1);
   const creatorDisplay = rca.creator_name || rca.creator_email.split('@')[0];
+  const creatorIsAlsoIC = ic && ic.email === rca.creator_email;
 
   return (
     <aside className="space-y-4">
       <div className="bg-slate-50 rounded-xl ring-1 ring-slate-200/60 p-4 space-y-3">
-        <Section title="Details">
+        <Section title="People">
           <div className="flex items-start gap-2">
             <Avatar name={creatorDisplay} size="xs" />
             <Row label="Author">{creatorDisplay}</Row>
@@ -64,13 +66,49 @@ export default function RightRail({ rca }: RightRailProps) {
           {ic && (
             <div className="flex items-start gap-2">
               <Avatar name={ic.name || ic.email} size="xs" />
-              <Row label="IC">{ic.name || ic.email.split('@')[0]}</Row>
+              <Row label="IC (incident commander)">
+                {ic.name || ic.email.split('@')[0]}
+                {creatorIsAlsoIC && <span className="text-slate-400 text-[11px]"> · also author</span>}
+              </Row>
             </div>
           )}
+          {coHandlers.length > 0 && (
+            <div>
+              <span className="block text-[11px] text-slate-500 mb-1.5">
+                Co-handlers ({coHandlers.length})
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {coHandlers.map((u) => {
+                  const display = u.name || u.email.split('@')[0];
+                  return (
+                    <span
+                      key={u.email}
+                      className="inline-flex items-center gap-1 bg-white rounded-full pl-0.5 pr-2 py-0.5 ring-1 ring-slate-200 text-[11.5px] text-slate-700"
+                      title={u.email}
+                    >
+                      <Avatar name={display} size="xs" />
+                      <span className="truncate max-w-[110px]">{display}</span>
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </Section>
+      </div>
+
+      <div className="bg-slate-50 rounded-xl ring-1 ring-slate-200/60 p-4">
+        <Section title="Timeline">
           {rca.incident_started_at && <Row label="Started">{shortDate(rca.incident_started_at)}</Row>}
           {rca.incident_detected_at && <Row label="Detected">{shortDate(rca.incident_detected_at)}</Row>}
           {rca.incident_mitigated_at && <Row label="Mitigated">{shortDate(rca.incident_mitigated_at)}</Row>}
           {rca.incident_resolved_at && <Row label="Resolved">{shortDate(rca.incident_resolved_at)}</Row>}
+          {!rca.incident_started_at &&
+            !rca.incident_detected_at &&
+            !rca.incident_mitigated_at &&
+            !rca.incident_resolved_at && (
+              <p className="text-[12px] text-slate-400 italic">No incident times recorded</p>
+            )}
         </Section>
       </div>
 

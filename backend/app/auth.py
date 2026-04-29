@@ -130,16 +130,21 @@ async def get_current_user(
     email, name = identity
     seed_admin = email in settings.admin_email_list
 
+    # Never overwrite a real name with a fallback. Pomerium doesn't always
+    # forward a `name` claim; when it doesn't, our resolver falls back to
+    # the email's local-part. That fallback should NOT clobber a real name
+    # in the DB on every login (otherwise it ping-pongs with user_enrich
+    # which keeps re-resolving the proper name from Slack).
+    local = email.split("@", 1)[0]
+    name_is_fallback = (not name) or name == local or name == email
+    update_set: dict = {"last_seen_at": datetime.now(timezone.utc)}
+    if not name_is_fallback:
+        update_set["name"] = name
+
     stmt = (
         pg_insert(User)
         .values(email=email, name=name, is_admin=seed_admin)
-        .on_conflict_do_update(
-            index_elements=[User.email],
-            set_={
-                "name": name,
-                "last_seen_at": datetime.now(timezone.utc),
-            },
-        )
+        .on_conflict_do_update(index_elements=[User.email], set_=update_set)
     )
     await db.execute(stmt)
 
