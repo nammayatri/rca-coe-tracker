@@ -462,6 +462,49 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
+  // Auto-scroll the form pane while dragging a row near its top/bottom edge, so
+  // you can reorder action items across a list taller than the viewport.
+  const autoScroll = useRef<{ raf: number | null; vy: number }>({ raf: null, vy: 0 });
+  const stopAutoScroll = () => {
+    if (autoScroll.current.raf) cancelAnimationFrame(autoScroll.current.raf);
+    autoScroll.current = { raf: null, vy: 0 };
+  };
+  const onPaneDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    const el = scrollPaneRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const EDGE = 70; // px from the edge that triggers scrolling
+    const MAX = 20; // max px per frame
+    const y = e.clientY;
+    let vy = 0;
+    if (y < r.top + EDGE) vy = -Math.ceil(((r.top + EDGE - y) / EDGE) * MAX);
+    else if (y > r.bottom - EDGE) vy = Math.ceil(((y - (r.bottom - EDGE)) / EDGE) * MAX);
+    autoScroll.current.vy = vy;
+    if (vy !== 0 && autoScroll.current.raf == null) {
+      const step = () => {
+        const s = autoScroll.current;
+        if (!s.vy || !scrollPaneRef.current) {
+          s.raf = null;
+          return;
+        }
+        scrollPaneRef.current.scrollTop += s.vy;
+        s.raf = requestAnimationFrame(step);
+      };
+      autoScroll.current.raf = requestAnimationFrame(step);
+    }
+  };
+  // Always stop auto-scroll when any drag ends (covers drop outside the pane).
+  useEffect(() => {
+    const stop = () => stopAutoScroll();
+    window.addEventListener('dragend', stop);
+    window.addEventListener('drop', stop);
+    return () => {
+      window.removeEventListener('dragend', stop);
+      window.removeEventListener('drop', stop);
+      stopAutoScroll();
+    };
+  }, []);
+
   const handleFormKeyDown = (e: React.KeyboardEvent<HTMLFormElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
@@ -568,7 +611,11 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
               </div>
               <div className="px-2 mt-1 text-[10.5px] text-slate-400">Cmd / Ctrl + Enter to submit</div>
             </nav>
-            <div ref={scrollPaneRef} className="flex-1 min-w-0 px-6 py-5 space-y-6 overflow-y-auto custom-scrollbar">
+            <div
+              ref={scrollPaneRef}
+              onDragOver={onPaneDragOver}
+              className="flex-1 min-w-0 px-6 py-5 space-y-6 overflow-y-auto custom-scrollbar"
+            >
               <Section id="incident" label="Incident">
                 <FieldLabel required>Title</FieldLabel>
                 <AutoGrowField

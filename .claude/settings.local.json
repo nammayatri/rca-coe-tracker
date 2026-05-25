@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p backend/static)",
+      "Bash(cp -R frontend/dist/. backend/static/)",
+      "Bash(curl -s -o /dev/null -w \"local: %{http_code}\\\\n\" localhost:8000/api/health)"
+    ]
+  }
+}
