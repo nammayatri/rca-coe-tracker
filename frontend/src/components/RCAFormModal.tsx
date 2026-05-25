@@ -1053,7 +1053,7 @@ function ActionItemTable({
               }}
               aria-label={`Reorder action item ${idx + 1} of ${rows.length} (drag, or arrow keys)`}
               title="Drag to reorder"
-              className="self-start mt-2 sm:mt-2.5 shrink-0 text-slate-300 hover:text-slate-500 cursor-grab active:cursor-grabbing rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+              className="self-start mt-1.5 sm:mt-2 shrink-0 p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-grab active:cursor-grabbing transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
             >
               <GripVertical className="w-4 h-4" />
             </button>
