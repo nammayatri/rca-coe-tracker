@@ -20,6 +20,18 @@ logger = logging.getLogger(__name__)
 
 _background_tasks: set[asyncio.Task] = set()
 
+# One lock per RCA so an auto-generate (on close) and a force-regenerate can't
+# run concurrently and clobber each other's write.
+_locks: dict[int, asyncio.Lock] = {}
+
+
+def _lock_for(rca_id: int) -> asyncio.Lock:
+    lock = _locks.get(rca_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _locks[rca_id] = lock
+    return lock
+
 
 PROMPT = """You are writing a clean, professional post-mortem summary for an RCA/COE document. The output goes into a markdown viewer in an internal tool, so formatting matters.
 
@@ -313,32 +325,38 @@ async def _call_llm(prompt: str) -> tuple[str, str] | None:
 
 
 async def _generate_and_persist(rca_id: int, force: bool = False) -> None:
-    try:
-        async with async_session_maker() as db:
-            rca = (await db.execute(select(RCA).where(RCA.id == rca_id))).scalar_one_or_none()
-            if not rca:
-                return
-            if rca.ai_summary and not force:
-                return
-            if rca.status not in (RCAStatus.RCA_DONE, RCAStatus.CLOSED) and not force:
-                return
-            prompt = await _build_prompt(db, rca)
+    # Serialize per-RCA so concurrent auto-generate + regenerate don't clobber.
+    async with _lock_for(rca_id):
+        try:
+            async with async_session_maker() as db:
+                rca = (await db.execute(select(RCA).where(RCA.id == rca_id))).scalar_one_or_none()
+                if not rca:
+                    return
+                if rca.ai_summary and not force:
+                    return
+                if rca.status not in (RCAStatus.RCA_DONE, RCAStatus.CLOSED) and not force:
+                    return
+                prompt = await _build_prompt(db, rca)
 
-        result = await _call_llm(prompt)
-        if not result:
-            return
-        summary, model_used = result
-
-        async with async_session_maker() as db:
-            rca = (await db.execute(select(RCA).where(RCA.id == rca_id))).scalar_one_or_none()
-            if not rca:
+            result = await _call_llm(prompt)
+            if not result:
                 return
-            rca.ai_summary = summary
-            rca.ai_summary_at = datetime.now(timezone.utc)
-            rca.ai_summary_model = model_used
-            await db.commit()
-    except Exception:
-        logger.exception("generate_and_persist failed for rca=%s", rca_id)
+            summary, model_used = result
+
+            async with async_session_maker() as db:
+                rca = (await db.execute(select(RCA).where(RCA.id == rca_id))).scalar_one_or_none()
+                if not rca:
+                    return
+                rca.ai_summary = summary
+                rca.ai_summary_at = datetime.now(timezone.utc)
+                rca.ai_summary_model = model_used
+                await db.commit()
+        except Exception:
+            logger.exception("generate_and_persist failed for rca=%s", rca_id)
+        # NB: intentionally do NOT remove the lock from `_locks` here — popping it
+        # while another coroutine is awaiting the same Lock would let a third
+        # caller create a *new* Lock and run concurrently. One small Lock per RCA
+        # id is negligible.
 
 
 def maybe_generate_on_close(rca_id: int) -> None:

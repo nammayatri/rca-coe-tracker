@@ -215,6 +215,15 @@ export default function RCAListPage() {
   const [search, setSearch] = useState(qParam);
   const debouncedSearch = useDebounced(search, 250);
   const [showCreate, setShowCreate] = useState(false);
+
+  // How many rows to fetch. "Load more" grows this (capped at the API's max);
+  // it resets to the default whenever the filters change.
+  const PAGE_STEP = 50;
+  const MAX_PAGE_SIZE = 200;
+  const [limit, setLimit] = useState(PAGE_STEP);
+  useEffect(() => {
+    setLimit(PAGE_STEP);
+  }, [statusParam, mineParam, debouncedSearch, severityParam, fromParam, toParam, followupsParam]);
   const isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac');
 
   const [view, setView] = useState<ViewMode>(() => {
@@ -267,8 +276,8 @@ export default function RCAListPage() {
     setSearchParams(next);
   };
 
-  const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['rcas', statusParam, mineParam, debouncedSearch, severityParam, fromParam, toParam],
+  const { data, isLoading, isFetching, error, refetch } = useQuery({
+    queryKey: ['rcas', statusParam, mineParam, debouncedSearch, severityParam, fromParam, toParam, limit],
     queryFn: () =>
       fetchRCAs({
         status: statusParam || undefined,
@@ -277,17 +286,24 @@ export default function RCAListPage() {
         severity: severityParam || undefined,
         from: fromParam || undefined,
         to: toParam || undefined,
+        page_size: limit,
       }),
     enabled: !followupsParam,
+    placeholderData: (prev) => prev, // keep current rows visible while "Load more" fetches
   });
 
-  // Follow-ups tab loads everything page-size-large so we can flatten action items.
+  // Follow-ups tab loads everything page-size-large so we can flatten action
+  // items. It honors the same severity/date/search filters (they persist across
+  // tab switches) so switching here doesn't silently drop them.
   const { data: followupsData, isLoading: followupsLoading } = useQuery({
-    queryKey: ['rcas-followups', debouncedSearch],
+    queryKey: ['rcas-followups', debouncedSearch, severityParam, fromParam, toParam],
     queryFn: () =>
       fetchRCAs({
         page_size: 200,
         q: debouncedSearch || undefined,
+        severity: severityParam || undefined,
+        from: fromParam || undefined,
+        to: toParam || undefined,
       }),
     enabled: followupsParam,
   });
@@ -606,6 +622,27 @@ export default function RCAListPage() {
               <RCACard rca={rca} />
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Pagination — without this the list silently stops at the page size. */}
+      {!followupsParam && !isLoading && !error && data && items.length < data.total && (
+        <div className="mt-5 flex flex-col items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setLimit((l) => Math.min(l + PAGE_STEP, MAX_PAGE_SIZE))}
+            disabled={isFetching || limit >= MAX_PAGE_SIZE}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all duration-150 active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isFetching ? (
+              <span className="inline-block w-3.5 h-3.5 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
+            ) : null}
+            {limit >= MAX_PAGE_SIZE ? `Showing first ${MAX_PAGE_SIZE}` : 'Load more'}
+          </button>
+          <span className="text-[12px] text-slate-400 tabular-nums">
+            Showing {items.length} of {data.total}
+            {limit >= MAX_PAGE_SIZE && data.total > MAX_PAGE_SIZE ? ' — refine filters to narrow the rest' : ''}
+          </span>
         </div>
       )}
 

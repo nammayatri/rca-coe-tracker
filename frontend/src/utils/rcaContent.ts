@@ -1,9 +1,9 @@
 // Single source of truth for the RCA structured form payload.
 //
 // The create AND edit flows both hold an `RCAContent`. On save we persist it
-// verbatim (the `content` JSONB column) and ALSO render it to markdown (`body`)
-// via `composeBody`, so the AI summary, Slack notifications, and link
-// extraction — all of which read `body` — keep working unchanged.
+// verbatim (the `content` JSONB column, via `serializeContent`) and ALSO render
+// it to markdown (`body`) via `composeBody`, so the AI summary, Slack
+// notifications, and link extraction — all of which read `body` — keep working.
 //
 // Editing reuses the same form: we hydrate it from the stored `content` when
 // present (lossless), or fall back to parsing the markdown `body` for legacy
@@ -20,21 +20,32 @@ export const ACTION_CATEGORIES = [
 ] as const;
 export type ActionCategory = (typeof ACTION_CATEGORIES)[number];
 
-export const ACTION_STATUSES = ['Open', 'In Progress', 'To Be Tested', 'Closed'] as const;
-export type ActionStatus = (typeof ACTION_STATUSES)[number];
+// Suggested statuses for the dropdown. NOTE: status is a free string (not a
+// closed union) so legacy/custom values like "Blocked" or "Won't Fix" survive
+// a parse -> edit -> save round-trip instead of collapsing to "Open"/"Closed".
+export const ACTION_STATUS_PRESETS = ['Open', 'In Progress', 'To Be Tested', 'Closed'] as const;
+export type ActionStatus = string;
+
+// Stable per-row id, used only as a React key during an editing session. It is
+// NOT persisted (stripped by serializeContent) and never rendered to markdown.
+let _ridSeq = 0;
+export const rid = (): string => `r${Date.now().toString(36)}${(_ridSeq++).toString(36)}`;
 
 export interface ActionItemRow {
+  id: string;
   action: string;
   status: ActionStatus;
   owner: User | null;
 }
 
 export interface TimelineRow {
+  id: string;
   time: string;
   event: string;
 }
 
 export interface RCAContent {
+  tldr: string;
   summary: string;
   impact: string;
   consequence: string;
@@ -48,13 +59,13 @@ export interface RCAContent {
   // Any markdown the structured form doesn't model (custom H2 sections, a
   // "## Pull requests" block appended on close, free-text someone added via the
   // raw editor). Carried verbatim and re-appended by composeBody so editing
-  // through the structured form NEVER drops content. Not shown as a field; it
-  // surfaces in the "Advanced: edit raw markdown" view.
+  // through the structured form NEVER drops content. Surfaces in the
+  // "Advanced: edit raw markdown" view.
   extra: string;
 }
 
-export const emptyActionRow = (): ActionItemRow => ({ action: '', status: 'Open', owner: null });
-export const emptyTimelineRow = (): TimelineRow => ({ time: '', event: '' });
+export const emptyActionRow = (): ActionItemRow => ({ id: rid(), action: '', status: 'Open', owner: null });
+export const emptyTimelineRow = (): TimelineRow => ({ id: rid(), time: '', event: '' });
 
 function emptyActions(seedRow = false): Record<ActionCategory, ActionItemRow[]> {
   const out = {} as Record<ActionCategory, ActionItemRow[]>;
@@ -66,6 +77,7 @@ function emptyActions(seedRow = false): Record<ActionCategory, ActionItemRow[]> 
 // timeline row, ready to drive an empty form.
 export function emptyContent(): RCAContent {
   return {
+    tldr: '',
     summary: '',
     impact: '',
     consequence: '',
@@ -83,6 +95,8 @@ export function emptyContent(): RCAContent {
 const ACTION_TIP =
   '_Tip: file each item in your tracker (Jira / Linear / GitHub) and paste the link in the action column._';
 
+const escCell = (s: string) => s.trim().replace(/\|/g, '\\|');
+
 // ───── content → markdown ─────
 
 export function composeBody(content: RCAContent): string {
@@ -94,6 +108,7 @@ export function composeBody(content: RCAContent): string {
     blocks.push(`## ${heading}\n\n${t}`);
   };
 
+  addText('TL;DR', content.tldr);
   addText('Summary', content.summary);
   addText('What was the impact?', content.impact);
   addText('What is the consequence of impact?', content.consequence);
@@ -115,19 +130,13 @@ export function composeBody(content: RCAContent): string {
   for (const cat of ACTION_CATEGORIES) {
     const rows = (content.actions[cat] || []).filter((r) => r.action.trim() || r.owner);
     if (rows.length === 0) continue;
-    const lines: string[] = [];
-    lines.push(`### ${cat}`);
-    lines.push('');
-    lines.push('| Action Item | Status | Owner |');
-    lines.push('|---|---|---|');
+    const lines: string[] = [`### ${cat}`, '', '| Action Item | Status | Owner |', '|---|---|---|'];
     for (const r of rows) {
       const ownerText = r.owner ? r.owner.name : '';
-      // Guard against pipes in free text breaking the markdown table.
-      const action = r.action.trim().replace(/\|/g, '\\|');
-      lines.push(`| ${action} | ${r.status} | ${ownerText.replace(/\|/g, '\\|')} |`);
+      const status = (r.status || '').trim() || 'Open';
+      lines.push(`| ${escCell(r.action)} | ${escCell(status)} | ${escCell(ownerText)} |`);
     }
-    lines.push('');
-    lines.push(ACTION_TIP);
+    lines.push('', ACTION_TIP);
     actionCategoryBlocks.push(lines.join('\n'));
   }
   if (actionCategoryBlocks.length > 0) {
@@ -137,9 +146,7 @@ export function composeBody(content: RCAContent): string {
   const tlRows = (content.timeline || []).filter((r) => r.time.trim() || r.event.trim());
   if (tlRows.length > 0) {
     const lines: string[] = ['## Timeline', '', '| Time | Event |', '|---|---|'];
-    for (const r of tlRows) {
-      lines.push(`| ${r.time.trim().replace(/\|/g, '\\|')} | ${r.event.trim().replace(/\|/g, '\\|')} |`);
-    }
+    for (const r of tlRows) lines.push(`| ${escCell(r.time)} | ${escCell(r.event)} |`);
     blocks.push(lines.join('\n'));
   }
 
@@ -154,6 +161,7 @@ export function composeBody(content: RCAContent): string {
 // editor opens populated or empty.
 export function contentIsEmpty(c: RCAContent): boolean {
   const proseEmpty =
+    !c.tldr.trim() &&
     !c.summary.trim() &&
     !c.impact.trim() &&
     !c.consequence.trim() &&
@@ -171,14 +179,10 @@ export function contentIsEmpty(c: RCAContent): boolean {
 
 // ───── markdown / stored JSON → content ─────
 
-function normalizeStatus(raw: string): ActionStatus {
-  const t = (raw || '').toLowerCase();
-  if (t.includes('progress')) return 'In Progress';
-  if (t.includes('test')) return 'To Be Tested';
-  if (t.includes('close') || t.includes('done') || t.includes('resolved') || t.includes('fixed')) {
-    return 'Closed';
-  }
-  return 'Open';
+// Keep the status string as authored; only default a blank one to "Open".
+function cleanStatus(raw: string): ActionStatus {
+  const t = (raw || '').trim();
+  return t || 'Open';
 }
 
 function mapCategory(raw: string): ActionCategory {
@@ -214,11 +218,7 @@ function contentFromParsed(parsed: ReturnType<typeof parseRCABody>): RCAContent 
     const cat = mapCategory(g.category);
     for (const r of g.rows) {
       if (!r.action.trim()) continue;
-      actions[cat].push({
-        action: r.action,
-        status: normalizeStatus(r.status),
-        owner: coerceOwner(r.owner),
-      });
+      actions[cat].push({ id: rid(), action: r.action, status: cleanStatus(r.status), owner: coerceOwner(r.owner) });
     }
   }
 
@@ -227,6 +227,7 @@ function contentFromParsed(parsed: ReturnType<typeof parseRCABody>): RCAContent 
   const fiveWhys = [parsed.rootCauseProse, parsed.fiveWhys].filter(Boolean).join('\n\n');
 
   return {
+    tldr: parsed.tldr ?? '',
     summary: parsed.summary ?? '',
     impact: parsed.impact ?? '',
     consequence: parsed.consequence ?? '',
@@ -236,7 +237,7 @@ function contentFromParsed(parsed: ReturnType<typeof parseRCABody>): RCAContent 
     couldBeBetter: parsed.couldBeBetter ?? '',
     gotLucky: parsed.gotLucky ?? '',
     actions,
-    timeline: parsed.timeline.map((t) => ({ time: t.time, event: t.event })),
+    timeline: parsed.timeline.map((t) => ({ id: rid(), time: t.time, event: t.event })),
     extra: parsed.unstructured ?? '',
   };
 }
@@ -258,8 +259,9 @@ function normalizeStored(raw: Record<string, unknown>): RCAContent {
       const action = typeof row.action === 'string' ? row.action : '';
       if (!action.trim() && !row.owner) continue;
       actions[cat].push({
+        id: rid(),
         action,
-        status: normalizeStatus(typeof row.status === 'string' ? row.status : 'Open'),
+        status: cleanStatus(typeof row.status === 'string' ? row.status : ''),
         owner: coerceOwner(row.owner),
       });
     }
@@ -268,12 +270,14 @@ function normalizeStored(raw: Record<string, unknown>): RCAContent {
   const timeline: TimelineRow[] = rawTimeline.map((t) => {
     const row = (t ?? {}) as Record<string, unknown>;
     return {
+      id: rid(),
       time: typeof row.time === 'string' ? row.time : '',
       event: typeof row.event === 'string' ? row.event : '',
     };
   });
 
   return {
+    tldr: str('tldr'),
     summary: str('summary'),
     impact: str('impact'),
     consequence: str('consequence'),
@@ -308,8 +312,7 @@ export function contentFromRCA(rca: RCA): RCAContent {
 export function ensureEditable(c: RCAContent): RCAContent {
   const actions = {} as Record<ActionCategory, ActionItemRow[]>;
   for (const cat of ACTION_CATEGORIES) {
-    const rows = c.actions[cat] && c.actions[cat].length > 0 ? c.actions[cat] : [emptyActionRow()];
-    actions[cat] = rows;
+    actions[cat] = c.actions[cat] && c.actions[cat].length > 0 ? c.actions[cat] : [emptyActionRow()];
   }
   return {
     ...c,
@@ -318,15 +321,44 @@ export function ensureEditable(c: RCAContent): RCAContent {
   };
 }
 
-// Strip fully-empty rows before persisting, so the stored JSON stays clean.
-export function compactContent(c: RCAContent): RCAContent {
-  const actions = {} as Record<ActionCategory, ActionItemRow[]>;
+// After a DIRECT body edit outside the structured editor (checklist toggle,
+// PR-link on close), compute the `content` to persist alongside the new body:
+//   - legacy row (no stored content) -> null, so body stays the source of truth
+//     and the row lazy-migrates losslessly on its first structured edit.
+//   - structured row -> keep the existing structured fields untouched and only
+//     refresh the freeform `extra` from the new body (the edit lives there), so
+//     we never downgrade structured data into a re-parsed/lossy blob.
+export function contentAfterBodyEdit(rca: RCA, newBody: string): Record<string, unknown> | null {
+  if (!looksLikeStoredContent(rca.content)) return null;
+  const base = normalizeStored(rca.content);
+  base.extra = contentFromMarkdown(newBody).extra;
+  return serializeContent(base);
+}
+
+// Serialize for storage: drop fully-empty rows and the transient `id`, returning
+// a plain JSON object. Typed as Record<string, unknown> so call sites need no
+// casts when assigning to the API's `content` field.
+export function serializeContent(c: RCAContent): Record<string, unknown> {
+  const actions: Record<string, { action: string; status: string; owner: User | null }[]> = {};
   for (const cat of ACTION_CATEGORIES) {
-    actions[cat] = (c.actions[cat] || []).filter((r) => r.action.trim() || r.owner);
+    actions[cat] = (c.actions[cat] || [])
+      .filter((r) => r.action.trim() || r.owner)
+      .map((r) => ({ action: r.action, status: (r.status || '').trim() || 'Open', owner: r.owner }));
   }
   return {
-    ...c,
+    tldr: c.tldr,
+    summary: c.summary,
+    impact: c.impact,
+    consequence: c.consequence,
+    fiveWhys: c.fiveWhys,
+    immediateResolution: c.immediateResolution,
+    wentWell: c.wentWell,
+    couldBeBetter: c.couldBeBetter,
+    gotLucky: c.gotLucky,
     actions,
-    timeline: (c.timeline || []).filter((r) => r.time.trim() || r.event.trim()),
+    timeline: (c.timeline || [])
+      .filter((r) => r.time.trim() || r.event.trim())
+      .map((r) => ({ time: r.time, event: r.event })),
+    extra: c.extra,
   };
 }

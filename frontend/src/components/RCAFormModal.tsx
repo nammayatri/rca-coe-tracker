@@ -14,14 +14,14 @@ import { useToast, getErrorMessage } from './Toaster';
 import { formatDuration } from '../utils/format';
 import {
   ACTION_CATEGORIES,
-  ACTION_STATUSES,
-  compactContent,
+  ACTION_STATUS_PRESETS,
   composeBody,
   contentFromMarkdown,
   contentFromRCA,
   emptyContent,
   emptyActionRow,
   emptyTimelineRow,
+  serializeContent,
   type ActionCategory,
   type ActionItemRow,
   type ActionStatus,
@@ -89,6 +89,7 @@ function draftIsMeaningful(d: DraftShape): boolean {
   const c = d.content;
   if (!c) return false;
   if (
+    c.tldr?.trim() ||
     c.summary.trim() ||
     c.impact.trim() ||
     c.consequence.trim() ||
@@ -124,6 +125,7 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
   const [touched, setTouched] = useState(false);
 
   // ── Structured body fields ──
+  const [tldr, setTldr] = useState('');
   const [summary, setSummary] = useState('');
   const [impact, setImpact] = useState('');
   const [consequence, setConsequence] = useState('');
@@ -147,6 +149,7 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
   const skipNextSave = useRef(false);
 
   const applyContent = (c: RCAContent) => {
+    setTldr(c.tldr);
     setSummary(c.summary);
     setImpact(c.impact);
     setConsequence(c.consequence);
@@ -224,6 +227,7 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
   }, [open, mode, rca?.id]);
 
   const buildContent = (): RCAContent => ({
+    tldr,
     summary,
     impact,
     consequence,
@@ -241,7 +245,7 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
     () => composeBody(buildContent()),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
-      summary, impact, consequence, fiveWhys, immediateResolution,
+      tldr, summary, impact, consequence, fiveWhys, immediateResolution,
       wentWell, couldBeBetter, gotLucky, actions, timeline, extra,
     ],
   );
@@ -282,7 +286,7 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
   }, [
     open, mode, title, severity, services,
     startedAt, detectedAt, mitigatedAt, resolvedAt, assignees,
-    summary, impact, consequence, fiveWhys, immediateResolution,
+    tldr, summary, impact, consequence, fiveWhys, immediateResolution,
     wentWell, couldBeBetter, gotLucky, actions, timeline, extra, overrideBody,
   ]);
 
@@ -299,7 +303,7 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
       const content =
         overrideBody !== null ? contentFromMarkdown(overrideBody) : buildContent();
       const body = (overrideBody !== null ? overrideBody : composeBody(content)).trim();
-      const contentJson = compactContent(content) as unknown as Record<string, unknown>;
+      const contentJson = serializeContent(content);
 
       if (mode === 'edit' && rca) {
         return updateRCA(rca.id, {
@@ -410,6 +414,7 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
     incident: titleValid || severity !== null || services.length > 0,
     times: !!(startedAt || detectedAt || mitigatedAt || resolvedAt),
     assignees: assignees.length > 0,
+    tldr: tldr.trim().length > 0,
     summary: summary.trim().length > 0,
     impact: impact.trim().length > 0,
     consequence: consequence.trim().length > 0,
@@ -424,6 +429,7 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
     { id: 'incident', label: 'Incident' },
     { id: 'times', label: 'Times' },
     { id: 'assignees', label: 'Assignees' },
+    { id: 'tldr', label: 'TL;DR' },
     { id: 'summary', label: 'Summary' },
     { id: 'impact', label: 'Impact' },
     { id: 'consequence', label: 'Consequence' },
@@ -606,6 +612,15 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
 
               <Section id="assignees" label="Assignees">
                 <UserAutocomplete value={assignees} onChange={setAssignees} placeholder="Search teammates…" />
+              </Section>
+
+              <Section id="tldr" label="TL;DR">
+                <BodyTextarea
+                  value={tldr}
+                  onChange={setTldr}
+                  placeholder="1-2 line summary: what broke, blast radius, how long, how we got out."
+                  minHeight={70}
+                />
               </Section>
 
               <Section id="summary" label="Summary">
@@ -825,6 +840,25 @@ function DateTimeField({
   );
 }
 
+// Resize a textarea to fit its content, deferred to the next animation frame so
+// we don't force a synchronous reflow on every keystroke.
+function useAutoGrow(
+  ref: React.RefObject<HTMLTextAreaElement | null>,
+  value: string,
+  minHeight: number,
+) {
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const raf = requestAnimationFrame(() => {
+      // Reset then measure so the box shrinks back when text is deleted.
+      el.style.height = 'auto';
+      el.style.height = `${Math.max(minHeight, el.scrollHeight)}px`;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [ref, value, minHeight]);
+}
+
 // A textarea that grows to fit its content so everything typed stays visible
 // (no inner scrollbar) and wraps long lines. Height never drops below minHeight.
 function AutoGrowTextarea({
@@ -834,6 +868,7 @@ function AutoGrowTextarea({
   minHeight = 100,
   className,
   autoFocus,
+  ariaLabel,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -841,21 +876,17 @@ function AutoGrowTextarea({
   minHeight?: number;
   className: string;
   autoFocus?: boolean;
+  ariaLabel?: string;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    // Reset then measure so the box shrinks back when text is deleted.
-    el.style.height = 'auto';
-    el.style.height = `${Math.max(minHeight, el.scrollHeight)}px`;
-  }, [value, minHeight]);
+  useAutoGrow(ref, value, minHeight);
   return (
     <textarea
       ref={ref}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
+      aria-label={ariaLabel ?? placeholder}
       autoFocus={autoFocus}
       rows={1}
       // break-words + overflow-hidden so long unbroken strings wrap instead of
@@ -878,6 +909,7 @@ function AutoGrowField({
   className,
   minHeight = 38,
   autoFocus,
+  ariaLabel,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -885,14 +917,10 @@ function AutoGrowField({
   className: string;
   minHeight?: number;
   autoFocus?: boolean;
+  ariaLabel?: string;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${Math.max(minHeight, el.scrollHeight)}px`;
-  }, [value, minHeight]);
+  useAutoGrow(ref, value, minHeight);
   return (
     <textarea
       ref={ref}
@@ -902,6 +930,7 @@ function AutoGrowField({
         if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) e.preventDefault();
       }}
       placeholder={placeholder}
+      aria-label={ariaLabel ?? placeholder}
       autoFocus={autoFocus}
       rows={1}
       style={{ minHeight }}
@@ -957,7 +986,7 @@ function ActionItemTable({
       <div className="space-y-2 sm:space-y-1.5">
         {rows.map((row, idx) => (
           <div
-            key={idx}
+            key={row.id}
             className="flex flex-col sm:flex-row sm:items-start gap-1.5 sm:gap-2 rounded-lg sm:rounded-none border sm:border-0 border-slate-200 p-2 sm:p-0"
           >
             <AutoGrowField
@@ -1006,12 +1035,14 @@ function ActionItemTable({
   );
 }
 
-const ACTION_STATUS_DOT: Record<ActionStatus, string> = {
+const ACTION_STATUS_DOT: Record<string, string> = {
   Open: 'bg-blue-500',
   'In Progress': 'bg-amber-500',
   'To Be Tested': 'bg-violet-500',
   Closed: 'bg-slate-400',
 };
+// Unknown/custom statuses (e.g. imported "Blocked") get a neutral dot.
+const statusDot = (s: string) => ACTION_STATUS_DOT[s] ?? 'bg-slate-300';
 
 function ActionStatusDropdown({
   value,
@@ -1020,14 +1051,20 @@ function ActionStatusDropdown({
   value: ActionStatus;
   onChange: (next: ActionStatus) => void;
 }) {
+  const display = (value || '').trim() || 'Open';
+  // A status not in the preset list (carried over from legacy markdown) still
+  // shows and stays selectable, so it's never silently rewritten.
+  const isCustom = !ACTION_STATUS_PRESETS.includes(display as (typeof ACTION_STATUS_PRESETS)[number]);
+  const items = isCustom ? [display, ...ACTION_STATUS_PRESETS] : [...ACTION_STATUS_PRESETS];
   const trigger = (
     <button
       type="button"
+      aria-label={`Status: ${display}`}
       className="w-32 shrink-0 inline-flex items-center justify-between gap-1.5 px-2.5 py-2 rounded-lg border border-slate-300 text-sm bg-white text-slate-700 hover:border-slate-400 transition-all duration-150"
     >
       <span className="inline-flex items-center gap-1.5 truncate">
-        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${ACTION_STATUS_DOT[value]}`} />
-        <span className="truncate">{value}</span>
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot(display)}`} />
+        <span className="truncate">{display}</span>
       </span>
       <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
     </button>
@@ -1037,15 +1074,15 @@ function ActionStatusDropdown({
     <Dropdown trigger={trigger} width={170}>
       {(close) => (
         <>
-          {ACTION_STATUSES.map((s) => (
+          {items.map((s) => (
             <DropdownItem
               key={s}
-              selected={s === value}
+              selected={s === display}
               onSelect={() => {
                 onChange(s);
                 close();
               }}
-              leading={<span className={`w-1.5 h-1.5 rounded-full ${ACTION_STATUS_DOT[s]}`} />}
+              leading={<span className={`w-1.5 h-1.5 rounded-full ${statusDot(s)}`} />}
             >
               {s}
             </DropdownItem>
@@ -1076,7 +1113,7 @@ function TimelineTable({
       </div>
       <div className="space-y-2 sm:space-y-1.5">
         {rows.map((row, idx) => (
-          <div key={idx} className="flex flex-col sm:flex-row sm:items-start gap-1.5 sm:gap-2">
+          <div key={row.id} className="flex flex-col sm:flex-row sm:items-start gap-1.5 sm:gap-2">
             <AutoGrowField
               value={row.time}
               onChange={(v) => onUpdate(idx, { time: v })}

@@ -2,12 +2,13 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
+from app.auth import require_admin
 from app.config import settings
 
 logging.basicConfig(
@@ -21,6 +22,25 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("Starting RCA COE Tracker API...")
     yield
+    # Give in-flight fire-and-forget work (Slack DMs, AI summaries, enrich) a
+    # brief window to finish before the event loop tears down, so we don't drop
+    # notifications/summaries mid-send on a rollout.
+    import asyncio
+
+    from app.services import ai_summary, notify, user_enrich
+
+    pending = [
+        *notify._background_tasks,
+        *ai_summary._background_tasks,
+        *user_enrich._background_tasks,
+    ]
+    if pending:
+        logger.info("Awaiting %d in-flight background task(s) before shutdown...", len(pending))
+        try:
+            await asyncio.wait(pending, timeout=10)
+        except Exception:
+            logger.exception("error while draining background tasks")
+
     from app.database import engine
     await engine.dispose()
     logger.info("Shutdown complete.")
@@ -32,11 +52,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Browsers forbid credentialed requests with a wildcard origin, and a
+# credentialed wildcard is a CSRF-adjacent footgun. So only enable credentials
+# when the origins are an explicit allow-list (never "*").
+_cors_origins = settings.cors_origin_list
+_cors_allow_credentials = bool(_cors_origins) and "*" not in _cors_origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_allow_credentials,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -161,10 +186,11 @@ async def logged_out():
 
 
 @app.get("/api/_debug/headers")
-async def debug_headers(request: Request):
+async def debug_headers(request: Request, _admin=Depends(require_admin)):
     """Echo proxy-relevant headers + decoded JWT claims so we can see what
-    the upstream proxy is actually sending. Unauthenticated by design —
-    only reachable behind the trusted proxy."""
+    the upstream proxy is actually sending. Admin-only: it surfaces identity
+    claims, so it must not be reachable by non-admins even if a proxy route
+    rule is ever misconfigured."""
     from app.auth import _decode_jwt_claims
 
     interesting: dict[str, str] = {}

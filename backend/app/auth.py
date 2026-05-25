@@ -163,7 +163,9 @@ async def get_current_user(
     if not user_row.slack_id or name_is_fallback:
         user_enrich.maybe_enrich(email)
 
-    return UserCtx(email=email, name=name, is_admin=bool(user_row.is_admin))
+    # Prefer the post-upsert DB name: enrich may already have stored a real
+    # display name even when this request's claims only yielded the fallback.
+    return UserCtx(email=email, name=user_row.name or name, is_admin=bool(user_row.is_admin))
 
 
 async def require_admin(user: UserCtx = Depends(get_current_user)) -> UserCtx:

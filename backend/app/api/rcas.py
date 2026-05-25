@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -23,6 +24,21 @@ from app.services import notify, ai_summary
 
 router = APIRouter(prefix="/api/rcas", tags=["rcas"])
 
+# `content` is a free-form client-supplied JSON blob; cap its serialized size so
+# a buggy/malicious client can't store an unbounded document.
+_MAX_CONTENT_BYTES = 500 * 1024
+
+
+def _check_content_size(content: dict | None) -> None:
+    if content is None:
+        return
+    try:
+        size = len(json.dumps(content, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="content is not JSON-serializable")
+    if size > _MAX_CONTENT_BYTES:
+        raise HTTPException(status_code=413, detail="content too large (max 500KB)")
+
 
 async def _get_rca_or_404(db: AsyncSession, rca_id: int) -> RCA:
     rca = (await db.execute(select(RCA).where(RCA.id == rca_id))).scalar_one_or_none()
@@ -31,19 +47,28 @@ async def _get_rca_or_404(db: AsyncSession, rca_id: int) -> RCA:
     return rca
 
 
-async def _serialize(db: AsyncSession, rca: RCA, user: UserCtx) -> RCAOut:
+async def _serialize(
+    db: AsyncSession,
+    rca: RCA,
+    user: UserCtx,
+    users_by_email: dict[str, User] | None = None,
+) -> RCAOut:
+    """Serialize an RCA. Pass `users_by_email` (a prefetched email->User map) to
+    avoid a per-RCA user query when serializing a list (see list_rcas)."""
     assignee_emails = [a.user_email for a in rca.assignees]
-    user_rows = []
-    creator_name = rca.creator_email
-    if assignee_emails or rca.creator_email:
+    if users_by_email is None:
         all_emails = list({*assignee_emails, rca.creator_email})
         rows = (
             await db.execute(select(User).where(User.email.in_(all_emails)))
         ).scalars().all()
-        by_email = {u.email: u for u in rows}
-        user_rows = [by_email[e] for e in assignee_emails if e in by_email]
-        if rca.creator_email in by_email:
-            creator_name = by_email[rca.creator_email].name
+        users_by_email = {u.email: u for u in rows}
+
+    user_rows = [users_by_email[e] for e in assignee_emails if e in users_by_email]
+    creator_name = (
+        users_by_email[rca.creator_email].name
+        if rca.creator_email in users_by_email
+        else rca.creator_email
+    )
 
     return RCAOut(
         id=rca.id,
@@ -147,7 +172,23 @@ async def list_rcas(
 
     stmt = stmt.order_by(RCA.created_at.desc()).limit(page_size).offset((page - 1) * page_size)
     rcas = (await db.execute(stmt)).scalars().all()
-    items = [await _serialize(db, r, user) for r in rcas]
+
+    # Batch the creator+assignee name lookups into ONE query for the whole page
+    # (assignees are already eager-loaded via selectin), instead of one query
+    # per RCA inside _serialize.
+    page_emails: set[str] = set()
+    for r in rcas:
+        page_emails.add(r.creator_email)
+        for a in r.assignees:
+            page_emails.add(a.user_email)
+    user_rows = (
+        (await db.execute(select(User).where(User.email.in_(page_emails)))).scalars().all()
+        if page_emails
+        else []
+    )
+    users_by_email = {u.email: u for u in user_rows}
+
+    items = [await _serialize(db, r, user, users_by_email) for r in rcas]
     return RCAListOut(items=items, total=total)
 
 
@@ -167,6 +208,7 @@ async def create_rca(
     db: AsyncSession = Depends(get_db),
     user: UserCtx = Depends(get_current_user),
 ) -> RCAOut:
+    _check_content_size(payload.content)
     cleaned_emails = list(dict.fromkeys(e.lower().strip() for e in payload.assignee_emails if e.strip()))
     await _ensure_users_exist(db, cleaned_emails)
 
@@ -243,6 +285,7 @@ async def patch_rca(
     # is its rendered form. Persist it whenever sent; no separate history row —
     # the body edit recorded above already captures "the content changed".
     if "content" in set_fields:
+        _check_content_size(payload.content)
         rca.content = payload.content
 
     if "severity" in set_fields and payload.severity != rca.severity:

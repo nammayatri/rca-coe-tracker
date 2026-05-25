@@ -42,16 +42,15 @@ import ActionItemsTable from '../components/ActionItemsTable';
 import LessonsPanels from '../components/LessonsPanels';
 import RightRail from '../components/RightRail';
 import RCAFormModal from '../components/RCAFormModal';
+import DatePicker from '../components/DatePicker';
 import { useToast, getErrorMessage } from '../components/Toaster';
 import {
   formatDate,
-  fromDatetimeLocal,
   statusLabels,
   timeAgo,
-  toDatetimeLocal,
 } from '../utils/format';
 import { parseRCABody } from '../utils/parseRCABody';
-import { contentFromMarkdown, compactContent } from '../utils/rcaContent';
+import { contentAfterBodyEdit } from '../utils/rcaContent';
 
 const TS_FIELDS = [
   { key: 'incident_started_at', label: 'Started' },
@@ -196,10 +195,10 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
 
   const [servicesDraft, setServicesDraft] = useState<string[]>(rca.services_affected);
   const [tsDraft, setTsDraft] = useState({
-    incident_started_at: toDatetimeLocal(rca.incident_started_at),
-    incident_detected_at: toDatetimeLocal(rca.incident_detected_at),
-    incident_mitigated_at: toDatetimeLocal(rca.incident_mitigated_at),
-    incident_resolved_at: toDatetimeLocal(rca.incident_resolved_at),
+    incident_started_at: rca.incident_started_at ?? '',
+    incident_detected_at: rca.incident_detected_at ?? '',
+    incident_mitigated_at: rca.incident_mitigated_at ?? '',
+    incident_resolved_at: rca.incident_resolved_at ?? '',
   });
 
   // Sync drafts back to the canonical RCA when it refetches — but only
@@ -210,10 +209,10 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
     if (!assigneesEditing) setAssigneesDraft(rca.assignees);
     setServicesDraft(rca.services_affected);
     setTsDraft({
-      incident_started_at: toDatetimeLocal(rca.incident_started_at),
-      incident_detected_at: toDatetimeLocal(rca.incident_detected_at),
-      incident_mitigated_at: toDatetimeLocal(rca.incident_mitigated_at),
-      incident_resolved_at: toDatetimeLocal(rca.incident_resolved_at),
+      incident_started_at: rca.incident_started_at ?? '',
+      incident_detected_at: rca.incident_detected_at ?? '',
+      incident_mitigated_at: rca.incident_mitigated_at ?? '',
+      incident_resolved_at: rca.incident_resolved_at ?? '',
     });
     // titleEditing/assigneesEditing intentionally excluded — toggling those
     // flags shouldn't re-pull from rca; the saveX handlers already commit.
@@ -224,6 +223,34 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
   useEffect(() => {
     prevSummaryAt.current = rca.ai_summary_at;
   }, [rca.ai_summary_at]);
+
+  // Regenerate runs in the background and returns the still-stale RCA, so poll
+  // briefly until ai_summary_at changes (the steady-state poll only runs while
+  // there's no summary, which isn't the regenerate case).
+  const regenPollRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (regenPollRef.current) window.clearInterval(regenPollRef.current);
+  }, []);
+  const startRegenPoll = () => {
+    if (regenPollRef.current) window.clearInterval(regenPollRef.current);
+    const since = prevSummaryAt.current;
+    let tries = 0;
+    regenPollRef.current = window.setInterval(async () => {
+      tries += 1;
+      try {
+        const fresh = await fetchRCA(rca.id);
+        queryClient.setQueryData(['rca', rca.id], fresh);
+        if (fresh.ai_summary_at && fresh.ai_summary_at !== since) {
+          success('Summary updated');
+          prevSummaryAt.current = fresh.ai_summary_at;
+          if (regenPollRef.current) window.clearInterval(regenPollRef.current);
+        }
+      } catch {
+        /* transient; keep trying until the cap */
+      }
+      if (tries >= 20 && regenPollRef.current) window.clearInterval(regenPollRef.current);
+    }, 2000);
+  };
 
   const patch = useMutation({
     mutationFn: (p: UpdateRCAPatch) => updateRCA(rca.id, p),
@@ -262,6 +289,9 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
       if (next.ai_summary_at && next.ai_summary_at !== prevSummaryAt.current) {
         success('Summary updated');
         prevSummaryAt.current = next.ai_summary_at;
+      } else {
+        // Summary is generated in the background — poll until it lands.
+        startRegenPoll();
       }
     },
     onError: (err) => {
@@ -314,12 +344,10 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
         const sep = body.trimEnd() ? body.trimEnd() + '\n\n' : '';
         updates.body = `${sep}${heading}\n\n- ${prUrl}\n`;
       }
-      // Keep the structured `content` in lockstep with the body we just edited
-      // directly, so a later structured edit won't drop the PR-links section.
-      updates.content = compactContent(contentFromMarkdown(updates.body)) as unknown as Record<
-        string,
-        unknown
-      >;
+      // Keep `content` consistent with the body we just edited directly without
+      // downgrading structured data (legacy rows get null -> body stays truth).
+      const c = contentAfterBodyEdit(rca, updates.body);
+      if (c) updates.content = c;
     }
     patch.mutate(updates, {
       onSuccess: () => setShowClose(false),
@@ -331,14 +359,32 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
     patch.mutate({ severity: next });
   };
 
-  const onChecklistToggle = (nextBody: string) => {
+  // InteractiveMarkdown renders only the unstructured slice, so it hands back
+  // the toggled UNSTRUCTURED text. Apply that single line-flip to the FULL body
+  // (so structured sections are never dropped), then sync content safely.
+  const onChecklistToggle = (nextUnstructured: string) => {
     if (!editable) return;
-    const content = compactContent(contentFromMarkdown(nextBody)) as unknown as Record<
-      string,
-      unknown
-    >;
-    queryClient.setQueryData(['rca', rca.id], { ...rca, body: nextBody, content });
-    patch.mutate({ body: nextBody, content });
+    const oldU = (parsed.unstructured ?? '').split('\n');
+    const newU = nextUnstructured.split('\n');
+    let oldLine: string | null = null;
+    let newLine: string | null = null;
+    for (let i = 0; i < Math.max(oldU.length, newU.length); i++) {
+      if (oldU[i] !== newU[i]) {
+        oldLine = oldU[i] ?? null;
+        newLine = newU[i] ?? null;
+        break;
+      }
+    }
+    if (oldLine == null || newLine == null) return;
+    const fullLines = rca.body.split('\n');
+    const at = fullLines.indexOf(oldLine);
+    if (at < 0) return;
+    fullLines[at] = newLine;
+    const nextBody = fullLines.join('\n');
+    const c = contentAfterBodyEdit(rca, nextBody);
+    const patchBody: UpdateRCAPatch = c ? { body: nextBody, content: c } : { body: nextBody };
+    queryClient.setQueryData(['rca', rca.id], { ...rca, body: nextBody, ...(c ? { content: c } : {}) });
+    patch.mutate(patchBody);
   };
 
   const servicesTimer = useRef<number | null>(null);
@@ -352,12 +398,13 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
   };
 
   const tsTimers = useRef<Record<string, number | null>>({});
-  const onTsChange = (key: (typeof TS_FIELDS)[number]['key'], v: string) => {
-    setTsDraft((d) => ({ ...d, [key]: v }));
+  const onTsChange = (key: (typeof TS_FIELDS)[number]['key'], v: string | null) => {
+    const val = v ?? '';
+    setTsDraft((d) => ({ ...d, [key]: val }));
     if (tsTimers.current[key]) window.clearTimeout(tsTimers.current[key]!);
     tsTimers.current[key] = window.setTimeout(() => {
-      const iso = fromDatetimeLocal(v);
-      if (iso === rca[key]) return;
+      const iso = val || null;
+      if (iso === (rca[key] ?? null)) return;
       patch.mutate({ [key]: iso } as UpdateRCAPatch);
     }, 600);
   };
@@ -781,11 +828,11 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
                       <label className="block text-[10.5px] font-medium text-slate-500 uppercase tracking-wide mb-1.5">
                         {f.label}
                       </label>
-                      <input
-                        type="datetime-local"
-                        value={tsDraft[f.key] || ''}
-                        onChange={(e) => onTsChange(f.key, e.target.value)}
-                        className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-[12.5px] tabular-nums soft-focus focus:outline-none focus:border-blue-400 bg-white"
+                      <DatePicker
+                        value={tsDraft[f.key] || null}
+                        onChange={(v) => onTsChange(f.key, v)}
+                        withTime
+                        placeholder={`Pick ${f.label.toLowerCase()} time`}
                       />
                     </div>
                   ))}

@@ -211,19 +211,23 @@ async def _send_assigned(
             added_text = ", ".join(added_mentions) if added_mentions else "(none)"
 
             for email in all_involved:
-                slack_id = await _resolve_slack_id(db, email)
-                if not slack_id:
-                    logger.info("No slack id for %s; skipping DM", email)
-                    continue
-                row = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
-                recipient_name = row.name if row else email
-                recipient_mention = _mention(slack_id, recipient_name)
+                # Isolate each recipient: one failed DM must not abort the rest.
+                try:
+                    slack_id = await _resolve_slack_id(db, email)
+                    if not slack_id:
+                        logger.info("No slack id for %s; skipping DM", email)
+                        continue
+                    row = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+                    recipient_name = row.name if row else email
+                    recipient_mention = _mention(slack_id, recipient_name)
 
-                if email in added_set:
-                    fallback, attachments = _assignment_attachment(rca, actor_mention, recipient_mention)
-                else:
-                    fallback, attachments = _assignment_broadcast_attachment(rca, actor_mention, added_text)
-                await slack_service.post_dm(slack_id, text=fallback, attachments=attachments)
+                    if email in added_set:
+                        fallback, attachments = _assignment_attachment(rca, actor_mention, recipient_mention)
+                    else:
+                        fallback, attachments = _assignment_broadcast_attachment(rca, actor_mention, added_text)
+                    await slack_service.post_dm(slack_id, text=fallback, attachments=attachments)
+                except Exception:
+                    logger.exception("notify_assigned: failed to DM %s for rca=%s", email, rca_id)
     except Exception:
         logger.exception("notify_assigned failed for rca=%s", rca_id)
 
@@ -246,13 +250,17 @@ async def _send_status_changed(
             actor_mention = _mention(actor_slack_id, actor_name)
             fallback, attachments = _status_attachment(rca, old, new, actor_mention)
             for email in recipients:
-                slack_id = await _resolve_slack_id(db, email)
-                if not slack_id:
-                    logger.info("notify_status_changed: no slack_id for %s", email)
-                    continue
-                logger.info("notify_status_changed: posting DM to %s (slack_id=%s)", email, slack_id)
-                resp = await slack_service.post_dm(slack_id, text=fallback, attachments=attachments)
-                logger.info("notify_status_changed: post_dm returned %s", "ok" if resp else "None")
+                # Isolate each recipient: one failed DM must not abort the rest.
+                try:
+                    slack_id = await _resolve_slack_id(db, email)
+                    if not slack_id:
+                        logger.info("notify_status_changed: no slack_id for %s", email)
+                        continue
+                    logger.info("notify_status_changed: posting DM to %s (slack_id=%s)", email, slack_id)
+                    resp = await slack_service.post_dm(slack_id, text=fallback, attachments=attachments)
+                    logger.info("notify_status_changed: post_dm returned %s", "ok" if resp else "None")
+                except Exception:
+                    logger.exception("notify_status_changed: failed to DM %s for rca=%s", email, rca_id)
     except Exception:
         logger.exception("notify_status_changed failed for rca=%s", rca_id)
 
