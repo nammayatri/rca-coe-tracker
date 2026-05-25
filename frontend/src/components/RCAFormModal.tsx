@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Check, ChevronDown, Pencil, Plus, RotateCcw, Trash2, X } from 'lucide-react';
+import { Check, ChevronDown, GripVertical, Pencil, Plus, RotateCcw, Trash2, X } from 'lucide-react';
 import { createRCA, updateRCA } from '../api/client';
 import type { RCA, RCASeverity, User } from '../api/types';
 import UserAutocomplete from './UserAutocomplete';
@@ -390,6 +390,20 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
     });
   };
 
+  // Move an action row within its category (drag-to-reorder / keyboard). The
+  // array order is what composeBody emits and parseRCABody reads back, so this
+  // is all that's needed for the new order to persist.
+  const reorderActionRow = (cat: ActionCategory, from: number, to: number) => {
+    setActions((prev) => {
+      const arr = prev[cat];
+      if (from === to || from < 0 || to < 0 || from >= arr.length || to >= arr.length) return prev;
+      const next = [...arr];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return { ...prev, [cat]: next };
+    });
+  };
+
   const updateTimelineRow = (idx: number, patch: Partial<TimelineRow>) => {
     setTimeline((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
   };
@@ -698,6 +712,7 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
                       onUpdate={(idx, patch) => updateActionRow(cat, idx, patch)}
                       onAdd={() => addActionRow(cat)}
                       onRemove={(idx) => removeActionRow(cat, idx)}
+                      onReorder={(from, to) => reorderActionRow(cat, from, to)}
                     />
                   ))}
                 </div>
@@ -967,17 +982,34 @@ function ActionItemTable({
   onUpdate,
   onAdd,
   onRemove,
+  onReorder,
 }: {
   category: ActionCategory;
   rows: ActionItemRow[];
   onUpdate: (idx: number, patch: Partial<ActionItemRow>) => void;
   onAdd: () => void;
   onRemove: (idx: number) => void;
+  onReorder: (from: number, to: number) => void;
 }) {
+  // Native HTML5 drag-to-reorder (no extra dep). Only the grip handle is
+  // draggable so it never interferes with text selection in the row's inputs.
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
+
+  const endDrag = () => {
+    setDragIdx(null);
+    setOverIdx(null);
+  };
+  const drop = (to: number) => {
+    if (dragIdx !== null && dragIdx !== to) onReorder(dragIdx, to);
+    endDrag();
+  };
+
   return (
     <div className="min-w-0">
       <h5 className="text-sm font-semibold text-slate-700 mb-2">{category}</h5>
       <div className="hidden sm:flex items-center gap-2 px-1 mb-1.5 text-[11px] text-slate-400 uppercase tracking-wide">
+        <div className="w-5 shrink-0" />
         <div className="flex-1 min-w-0">Action Item</div>
         <div className="w-32 shrink-0">Status</div>
         <div className="w-48 shrink-0">Owners</div>
@@ -987,8 +1019,44 @@ function ActionItemTable({
         {rows.map((row, idx) => (
           <div
             key={row.id}
-            className="flex flex-col sm:flex-row sm:items-start gap-1.5 sm:gap-2 rounded-lg sm:rounded-none border sm:border-0 border-slate-200 p-2 sm:p-0"
+            onDragOver={(e) => {
+              if (dragIdx === null) return;
+              e.preventDefault();
+              if (overIdx !== idx) setOverIdx(idx);
+            }}
+            onDrop={(e) => {
+              if (dragIdx === null) return;
+              e.preventDefault();
+              drop(idx);
+            }}
+            className={`flex flex-col sm:flex-row sm:items-start gap-1.5 sm:gap-2 rounded-lg sm:rounded-md border sm:border border-slate-200 sm:border-transparent p-2 sm:p-1 transition-colors ${
+              dragIdx === idx ? 'opacity-50' : ''
+            } ${overIdx === idx && dragIdx !== null && dragIdx !== idx ? 'sm:border-blue-300 sm:bg-blue-50/40' : ''}`}
           >
+            {/* Drag handle (the only draggable part) + keyboard reorder. */}
+            <button
+              type="button"
+              draggable
+              onDragStart={(e) => {
+                setDragIdx(idx);
+                e.dataTransfer.effectAllowed = 'move';
+              }}
+              onDragEnd={endDrag}
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  onReorder(idx, idx - 1);
+                } else if (e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  onReorder(idx, idx + 1);
+                }
+              }}
+              aria-label={`Reorder action item ${idx + 1} of ${rows.length} (drag, or arrow keys)`}
+              title="Drag to reorder"
+              className="self-start mt-2 sm:mt-2.5 shrink-0 text-slate-300 hover:text-slate-500 cursor-grab active:cursor-grabbing rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+            >
+              <GripVertical className="w-4 h-4" />
+            </button>
             {/* Multi-line action text (Enter = newline). Stored verbatim in
                 content; encoded as <br> in the markdown table body. */}
             <AutoGrowTextarea
@@ -1012,7 +1080,7 @@ function ActionItemTable({
                 type="button"
                 onClick={() => onRemove(idx)}
                 aria-label="Remove row"
-                className="text-slate-400 hover:text-red-500 hover:bg-red-50 rounded p-1 shrink-0"
+                className="text-slate-400 hover:text-red-500 hover:bg-red-50 rounded p-1 shrink-0 self-start mt-1"
               >
                 <Trash2 className="w-4 h-4" />
               </button>
