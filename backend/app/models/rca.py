@@ -2,7 +2,7 @@ import enum
 from datetime import datetime, timezone
 
 from sqlalchemy import BigInteger, String, Text, DateTime, ForeignKey, Enum as SAEnum
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -57,6 +57,14 @@ class RCA(Base):
     ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_summary_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ai_summary_model: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Structured form payload (the same fields the create/edit form holds), so
+    # the RCA can be re-opened in the structured editor losslessly instead of
+    # only as raw markdown. `body` (markdown) stays the rendered/derived form
+    # of this and remains the source for AI summary, Slack, and link extraction.
+    # Nullable: legacy rows have NULL here and are hydrated from `body` on first
+    # edit (see frontend rcaContent.contentFromRCA), which persists `content`.
+    content: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     assignees: Mapped[list["RCAAssignee"]] = relationship(  # noqa: F821
         "RCAAssignee",

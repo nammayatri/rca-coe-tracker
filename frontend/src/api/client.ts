@@ -64,6 +64,7 @@ export async function fetchRCA(id: number): Promise<RCA> {
 export interface CreateRCAInput {
   title: string;
   body?: string;
+  content?: Record<string, unknown> | null;
   assignee_emails: string[];
   severity?: RCASeverity | null;
   environment?: string | null;
@@ -82,6 +83,7 @@ export async function createRCA(input: CreateRCAInput): Promise<RCA> {
 export type UpdateRCAPatch = Partial<{
   title: string;
   body: string;
+  content: Record<string, unknown> | null;
   assignee_emails: string[];
   status: RCAStatus;
   severity: RCASeverity | null;

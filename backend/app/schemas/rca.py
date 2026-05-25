@@ -9,6 +9,9 @@ from app.schemas.user import UserOut
 class RCACreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=500)
     body: str = ""
+    # Structured form payload mirroring `body`. Free-form dict (the frontend
+    # owns the shape); stored verbatim and used to re-hydrate the editor.
+    content: dict | None = None
     assignee_emails: list[str] = Field(default_factory=list)
     severity: RCASeverity | None = None
     environment: str | None = None
@@ -22,6 +25,7 @@ class RCACreate(BaseModel):
 class RCAPatch(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=500)
     body: str | None = None
+    content: dict | None = None
     assignee_emails: list[str] | None = None
     status: RCAStatus | None = None
     severity: RCASeverity | None = None
@@ -41,6 +45,7 @@ class RCAOut(BaseModel):
     id: int
     title: str
     body: str
+    content: dict | None
     status: RCAStatus
     severity: RCASeverity | None
     environment: str | None

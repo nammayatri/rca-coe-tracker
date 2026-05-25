@@ -23,6 +23,10 @@ export interface RCA {
   id: number;
   title: string;
   body: string;
+  // Structured form payload mirroring `body`. Shape is owned by utils/rcaContent
+  // (RCAContent); kept loose here to avoid an import cycle. Null for legacy RCAs
+  // created before structured editing — those hydrate from `body` instead.
+  content: Record<string, unknown> | null;
   status: RCAStatus;
   creator_email: string;
   creator_name: string;

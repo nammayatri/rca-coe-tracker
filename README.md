@@ -9,9 +9,14 @@ and auto-summarise on closure.
   Closed`, DM everyone involved on every change, and auto-generate a
   post-mortem summary on closure.
 - **Auth**: trusts an upstream identity proxy (Pomerium / oauth2-proxy /
-  similar) to set the `x-pomerium-claim-email` and `x-pomerium-claim-name`
-  forwarded headers. No Google OAuth / no JWT in the app itself. Works
-  with any proxy that can set those headers.
+  similar). It reads identity from the forwarded `x-pomerium-claim-*` headers,
+  or from a Pomerium JWT assertion (decoded for its claims, not verified — the
+  proxy is the trust boundary). The app issues no sessions or tokens of its
+  own. Works with any proxy that can set those headers.
+- **Structured editor**: create *and* edit an RCA through one form — incident
+  metadata (severity, services, timestamps), summary, Five Whys, action items,
+  and a timeline. Saved as both a structured payload and a rendered markdown
+  body, so the same form reopens for editing.
 - **Notifications**: Slack DMs to creator + assignees on assignment
   changes and status transitions. Bring your own bot token.
 - **AI summary**: optional. Plug any OpenAI-compatible endpoint into
@@ -23,11 +28,12 @@ and auto-summarise on closure.
 ```
 backend/      FastAPI + SQLAlchemy 2.0 async + slack-sdk + litellm
 frontend/     React 19 + Vite 6 + Tailwind 4 + React Query
-prodk8s/      k8s manifests (single-pod app + in-cluster Postgres + PVC)
+prodk8s/      k8s manifests (one pod: app + Postgres sidecar on a shared PVC)
 Dockerfile    multi-stage: node build → python runtime serving SPA + API
 ```
 
-One container in production. One process in dev.
+One pod in production (app + Postgres sidecar containers, sharing a PVC over
+`localhost`). Locally, the app runs as one process and Postgres runs in Docker.
 
 ## Run locally
 
@@ -84,8 +90,9 @@ See [`prodk8s/DEPLOY.md`](prodk8s/DEPLOY.md). TL;DR:
    public URL, and secret values.
 2. `kubectl apply -f prodk8s/deployment.yaml`.
 3. Run `prodk8s/init.sql` + every `backend/migrations/*.sql` against the
-   in-cluster Postgres pod.
-4. Build & push the multi-stage image, then `kubectl set image`.
+   `postgres` container in the app pod
+   (`kubectl exec -i <pod> -c postgres -- psql -U rca -d rca_coe < <file>`).
+4. Build & push the multi-stage image, then `kubectl set image` (or re-`apply`).
 5. Add a route to your identity proxy that forwards `x-pomerium-claim-*`
    headers (or equivalent) to the app's `:8000` Service.
 

@@ -15,7 +15,7 @@ import {
 import { fetchRCAs } from '../api/client';
 import type { RCA, RCASeverity, RCAStatus } from '../api/types';
 import RCACard from '../components/RCACard';
-import CreateRCAModal from '../components/CreateRCAModal';
+import RCAFormModal from '../components/RCAFormModal';
 import Dropdown, { DropdownItem } from '../components/Dropdown';
 import DateRangeFilter from '../components/DateRangeFilter';
 import StatusBadge from '../components/StatusBadge';
@@ -609,7 +609,7 @@ export default function RCAListPage() {
         </div>
       )}
 
-      <CreateRCAModal open={showCreate} onClose={() => setShowCreate(false)} />
+      <RCAFormModal mode="create" open={showCreate} onClose={() => setShowCreate(false)} />
     </div>
   );
 }

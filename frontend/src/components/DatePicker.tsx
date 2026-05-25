@@ -185,26 +185,45 @@ export default function DatePicker({
     };
   }, [open]);
 
-  // Position the popover below the trigger.
+  // Position the popover relative to the trigger, clamped into the viewport so
+  // it can never overflow off-screen — flips above the trigger when there isn't
+  // enough room below, and is pinned within the left/right/bottom edges.
   useLayoutEffect(() => {
     if (!open) return;
+    const MARGIN = 8;
+    const WIDTH = 304; // calendar width
     const update = () => {
       const el = triggerRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
-      const measuredWidth = 304; // calendar width
-      // Popover is position: fixed (viewport-relative) — no scroll offsets.
-      const left = align === 'right' ? r.right - measuredWidth : r.left;
-      setAnchor({
-        top: r.bottom + 6,
-        left,
-        width: measuredWidth,
-      });
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+
+      // Horizontal: honor the requested alignment, then clamp into the viewport.
+      let left = align === 'right' ? r.right - WIDTH : r.left;
+      left = Math.max(MARGIN, Math.min(left, vw - WIDTH - MARGIN));
+
+      // Vertical: prefer below; flip above when there's more room there.
+      const popH = popoverRef.current?.offsetHeight ?? 360;
+      const roomBelow = vh - r.bottom - MARGIN;
+      const roomAbove = r.top - MARGIN;
+      let top = r.bottom + 6;
+      if (roomBelow < popH && roomAbove > roomBelow) {
+        top = r.top - 6 - popH;
+      }
+      // Final clamp so it stays fully on-screen regardless.
+      top = Math.max(MARGIN, Math.min(top, vh - popH - MARGIN));
+
+      setAnchor({ top, left, width: WIDTH });
     };
     update();
+    // Re-measure once the popover has actually rendered, so the flip uses its
+    // real height instead of the estimate.
+    const raf = requestAnimationFrame(update);
     window.addEventListener('resize', update);
     window.addEventListener('scroll', update, true);
     return () => {
+      cancelAnimationFrame(raf);
       window.removeEventListener('resize', update);
       window.removeEventListener('scroll', update, true);
     };
@@ -348,8 +367,14 @@ export default function DatePicker({
             id={dialogId}
             role="dialog"
             aria-label="Choose date"
-            style={{ top: anchor.top, left: anchor.left, width: anchor.width }}
-            className="fixed z-[60] glass layered-shadow rounded-2xl ring-1 ring-slate-200/70 p-3 animate-dropdown"
+            style={{
+              top: anchor.top,
+              left: anchor.left,
+              width: anchor.width,
+              maxHeight: 'calc(100vh - 16px)',
+              overflowY: 'auto',
+            }}
+            className="fixed z-[60] glass layered-shadow rounded-2xl ring-1 ring-slate-200/70 p-3 animate-dropdown custom-scrollbar"
           >
             {presets && presets.length > 0 && (
               <div className="flex flex-wrap gap-1 mb-3 pb-3 border-b border-slate-200/60">

@@ -41,6 +41,7 @@ import FiveWhysCallout from '../components/FiveWhysCallout';
 import ActionItemsTable from '../components/ActionItemsTable';
 import LessonsPanels from '../components/LessonsPanels';
 import RightRail from '../components/RightRail';
+import RCAFormModal from '../components/RCAFormModal';
 import { useToast, getErrorMessage } from '../components/Toaster';
 import {
   formatDate,
@@ -50,6 +51,7 @@ import {
   toDatetimeLocal,
 } from '../utils/format';
 import { parseRCABody } from '../utils/parseRCABody';
+import { contentFromMarkdown, compactContent } from '../utils/rcaContent';
 
 const TS_FIELDS = [
   { key: 'incident_started_at', label: 'Started' },
@@ -182,8 +184,8 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState(rca.title);
 
-  const [bodyEditing, setBodyEditing] = useState(false);
-  const [bodyDraft, setBodyDraft] = useState(rca.body);
+  // The full structured create/edit form, reused for editing this RCA.
+  const [editOpen, setEditOpen] = useState(false);
 
   const [assigneesEditing, setAssigneesEditing] = useState(false);
   const [assigneesDraft, setAssigneesDraft] = useState<User[]>(rca.assignees);
@@ -205,7 +207,6 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
   // blow away a draft they're typing.
   useEffect(() => {
     if (!titleEditing) setTitleDraft(rca.title);
-    if (!bodyEditing) setBodyDraft(rca.body);
     if (!assigneesEditing) setAssigneesDraft(rca.assignees);
     setServicesDraft(rca.services_affected);
     setTsDraft({
@@ -214,8 +215,8 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
       incident_mitigated_at: toDatetimeLocal(rca.incident_mitigated_at),
       incident_resolved_at: toDatetimeLocal(rca.incident_resolved_at),
     });
-    // titleEditing/bodyEditing/assigneesEditing intentionally excluded — toggling
-    // those flags shouldn't re-pull from rca; the saveX handlers already commit.
+    // titleEditing/assigneesEditing intentionally excluded — toggling those
+    // flags shouldn't re-pull from rca; the saveX handlers already commit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rca]);
 
@@ -279,15 +280,6 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
     setTitleEditing(false);
   };
 
-  const saveBody = () => {
-    if (bodyDraft === rca.body) {
-      setBodyEditing(false);
-      return;
-    }
-    patch.mutate({ body: bodyDraft });
-    setBodyEditing(false);
-  };
-
   const saveAssignees = () => {
     const next = assigneesDraft.map((u) => u.email).sort();
     const prev = rca.assignees.map((u) => u.email).sort();
@@ -322,6 +314,12 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
         const sep = body.trimEnd() ? body.trimEnd() + '\n\n' : '';
         updates.body = `${sep}${heading}\n\n- ${prUrl}\n`;
       }
+      // Keep the structured `content` in lockstep with the body we just edited
+      // directly, so a later structured edit won't drop the PR-links section.
+      updates.content = compactContent(contentFromMarkdown(updates.body)) as unknown as Record<
+        string,
+        unknown
+      >;
     }
     patch.mutate(updates, {
       onSuccess: () => setShowClose(false),
@@ -335,8 +333,12 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
 
   const onChecklistToggle = (nextBody: string) => {
     if (!editable) return;
-    queryClient.setQueryData(['rca', rca.id], { ...rca, body: nextBody });
-    patch.mutate({ body: nextBody });
+    const content = compactContent(contentFromMarkdown(nextBody)) as unknown as Record<
+      string,
+      unknown
+    >;
+    queryClient.setQueryData(['rca', rca.id], { ...rca, body: nextBody, content });
+    patch.mutate({ body: nextBody, content });
   };
 
   const servicesTimer = useRef<number | null>(null);
@@ -410,24 +412,15 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
         </button>
 
         <div className="flex items-center gap-2">
-          {editable && !bodyEditing && (
+          {editable && (
             <button
               type="button"
-              onClick={() => {
-                setBodyDraft(rca.body);
-                setBodyEditing(true);
-                // Wait one tick for the editor to mount, then scroll into view.
-                requestAnimationFrame(() => {
-                  document
-                    .getElementById('rca-body-editor')
-                    ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                });
-              }}
+              onClick={() => setEditOpen(true)}
               className="inline-flex items-center gap-1.5 text-[13px] text-slate-700 hover:text-blue-700 bg-white hover:bg-blue-50 ring-1 ring-slate-200 hover:ring-blue-300 px-3 py-1.5 rounded-lg transition-all duration-150 active:scale-[0.97] font-medium"
-              title="Edit the RCA body — TL;DR, sections, action items, timeline"
+              title="Edit this RCA — incident details, summary, 5 Whys, action items, timeline"
             >
               <Pencil className="w-3.5 h-3.5" />
-              Edit content
+              Edit RCA
             </button>
           )}
           {(deletable || isAdmin) && (
@@ -717,52 +710,8 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
             </section>
           )}
 
-          {/* Body editor (full raw) */}
-          {bodyEditing && (
-            <section
-              id="rca-body-editor"
-              className="bg-white rounded-2xl ring-1 ring-slate-200/60 p-5 scroll-mt-20"
-            >
-              <div className="flex items-center justify-between mb-3">
-                <div>
-                  <h3 className="text-[10px] uppercase tracking-[0.08em] text-slate-500 font-semibold">
-                    Edit content (markdown)
-                  </h3>
-                  <p className="text-[12px] text-slate-500 mt-0.5">
-                    Edit any section — TL;DR, summary, 5 Whys, action items, timeline. Save commits to the body field.
-                  </p>
-                </div>
-              </div>
-              <textarea
-                value={bodyDraft}
-                onChange={(e) => setBodyDraft(e.target.value)}
-                rows={24}
-                placeholder="Markdown supported"
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm soft-focus focus:outline-none focus:border-blue-400 font-mono leading-relaxed"
-                autoFocus
-              />
-              <div className="flex justify-end gap-2 mt-2">
-                <button
-                  onClick={() => {
-                    setBodyDraft(rca.body);
-                    setBodyEditing(false);
-                  }}
-                  className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-lg px-3 py-1.5 text-sm font-medium transition-all duration-150 active:scale-[0.97]"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={saveBody}
-                  className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 py-1.5 text-sm font-medium transition-all duration-150 active:scale-[0.97]"
-                >
-                  Save
-                </button>
-              </div>
-            </section>
-          )}
-
           {/* Unstructured fallback — preserves user-authored sections we don't know how to render. */}
-          {!bodyEditing && parsed.unstructured && (
+          {parsed.unstructured && (
             <section className="max-w-[68ch]">
               <InteractiveMarkdown
                 body={parsed.unstructured}
@@ -772,16 +721,13 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
             </section>
           )}
 
-          {!bodyEditing && !hasStructured && !parsed.unstructured && (
+          {!hasStructured && !parsed.unstructured && (
             <section>
               <p className="text-[13px] text-slate-400 italic">
                 No description yet.{' '}
                 {editable && (
                   <button
-                    onClick={() => {
-                      setBodyDraft(rca.body);
-                      setBodyEditing(true);
-                    }}
+                    onClick={() => setEditOpen(true)}
                     className="text-blue-600 hover:text-blue-700 not-italic font-medium"
                   >
                     Add one →
@@ -910,6 +856,8 @@ function RCADetailContent({ rca }: RCADetailContentProps) {
         onConfirm={confirmClose}
         pending={patch.isPending}
       />
+
+      <RCAFormModal mode="edit" rca={rca} open={editOpen} onClose={() => setEditOpen(false)} />
     </div>
   );
 }

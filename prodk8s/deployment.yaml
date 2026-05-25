@@ -1,26 +1,57 @@
 # =============================================================================
-# RCA COE Tracker — production manifests.
+# RCA COE Tracker — Kubernetes manifests (single-pod topology).
+#
+# One pod runs BOTH containers, sharing one data volume:
+#   - postgres : the database, storing its data on the rca-coe-pgdata PVC
+#   - app      : FastAPI + the built React SPA, talking to Postgres on localhost
+#
+# There is intentionally NO separate database StatefulSet/Service — the DB is a
+# sidecar container in the app pod. One pod, one volume, DB on loopback. This
+# keeps a small internal tool simple to run and reason about.
 #
 # Resources:
-#   1. PersistentVolumeClaim   rca-coe-pgdata        (10Gi)
+#   1. PersistentVolumeClaim   rca-coe-pgdata        (10Gi, the data volume)
 #   2. Secret                  rca-coe-db-secret     (Postgres creds)
-#   3. StatefulSet             rca-coe-db            (postgres:16-alpine)
-#   4. Service                 rca-coe-db            (ClusterIP :5432)
-#   5. ConfigMap               rca-coe-config        (app non-secrets)
-#   6. Secret                  rca-coe-secrets       (app secrets)
-#   7. Deployment              rca-coe-tracker       (FastAPI + SPA)
-#   8. Service                 rca-coe-tracker       (ClusterIP :8000)
+#   3. ConfigMap               rca-coe-config        (app non-secrets)
+#   4. Secret                  rca-coe-secrets       (app secrets; DB on localhost)
+#   5. Deployment              rca-coe-tracker       (postgres + app, one pod)
+#   6. Service                 rca-coe-tracker       (ClusterIP :8000)
+#
+# Trade-offs of co-locating the DB in the app pod (vs a separate StatefulSet):
+#   - App rollouts restart Postgres too (brief downtime). The Deployment uses
+#     strategy: Recreate + replicas: 1, so this is already the behaviour.
+#   - You cannot scale the app beyond 1 replica — the RWO PVC + single Postgres
+#     writer forbid it. For a bigger deployment, split the DB back out into a
+#     StatefulSet (or use a managed Postgres) and point DATABASE_URL at it.
 #
 # Auth is fronted by an upstream identity proxy (Pomerium / oauth2-proxy /
-# similar). The app trusts forwarded claims:
-#   x-pomerium-claim-email, x-pomerium-claim-name
+# similar) that forwards identity. The app trusts forwarded claims:
+#   x-pomerium-claim-email, x-pomerium-claim-name  (or a Pomerium JWT assertion)
 #
+# -----------------------------------------------------------------------------
 # Before applying:
-#   - Replace `your-namespace` everywhere with your target k8s namespace.
-#   - Replace `<your-registry>/rca-coe-tracker:<tag>` with your image ref.
+#   - Replace `your-namespace` everywhere with your target namespace.
+#   - Build & push the image (multi-stage Dockerfile at repo root) and set the
+#     `app` container image below. If your cluster has mixed CPU architectures
+#     and you build a single-arch image, uncomment the nodeSelector so the pod
+#     only schedules on a matching node (or build a multi-arch image instead).
 #   - Replace APP_BASE_URL / CORS_ORIGINS with your real public URL.
 #   - Set ADMIN_EMAILS to the seed admin emails.
-#   - Fill in the four placeholder secrets in step 6.
+#   - Fill in the placeholder secrets (steps 2 and 4).
+#   - Add a route on your identity proxy that forwards x-pomerium-claim-* to
+#     this Service on :8000.
+#
+# First-time database setup (once the pod is Running):
+#   POD=$(kubectl -n your-namespace get pod -l app=rca-coe-tracker \
+#         -o jsonpath='{.items[0].metadata.name}')
+#   # schema + role + search_path:
+#   kubectl -n your-namespace exec -i "$POD" -c postgres -- \
+#     sh -c 'psql -U rca -d rca_coe' < prodk8s/init.sql
+#   # tables + columns (run each migration in order):
+#   for f in backend/migrations/*.sql; do
+#     kubectl -n your-namespace exec -i "$POD" -c postgres -- \
+#       sh -c 'psql -U rca -d rca_coe -v ON_ERROR_STOP=1' < "$f"
+#   done
 # =============================================================================
 
 ---
@@ -31,7 +62,7 @@ metadata:
   name: rca-coe-pgdata
   namespace: your-namespace
   labels:
-    app: rca-coe-db
+    app: rca-coe-tracker
 spec:
   accessModes:
     - ReadWriteOnce
@@ -45,7 +76,7 @@ spec:
 # FIXME(rotate): the password below is a placeholder. Set a real one before
 # anything sensitive lands in this DB. To rotate later:
 #   1. kubectl edit secret rca-coe-db-secret -n your-namespace
-#   2. exec into rca-coe-db-0 and ALTER USER rca WITH PASSWORD '<new>';
+#   2. exec into the postgres container and ALTER USER rca WITH PASSWORD '<new>';
 #   3. update DATABASE_URL in rca-coe-secrets to match
 apiVersion: v1
 kind: Secret
@@ -59,31 +90,86 @@ stringData:
   POSTGRES_DB: "rca_coe"
 
 ---
-# 3. Postgres StatefulSet -----------------------------------------------------
-apiVersion: apps/v1
-kind: StatefulSet
+# 3. App ConfigMap ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: rca-coe-db
+  name: rca-coe-config
+  namespace: your-namespace
+data:
+  # Public URL the identity proxy serves the app on.
+  APP_BASE_URL: "https://rca-coe.example.com"
+  CORS_ORIGINS: "https://rca-coe.example.com"
+  # DB (must match rca-coe-db-secret + DATABASE_URL in rca-coe-secrets)
+  DB_SCHEMA: "rca_coe"
+  DB_USER: "rca"
+  DB_NAME: "rca_coe"
+  # Comma-separated seed admin emails. Cannot be demoted from the UI.
+  ADMIN_EMAILS: "admin@example.com"
+  # AI summary on RCA closure (optional). Use a non-reasoning model — reasoning
+  # models leak chain-of-thought as visible text. Leave AI_API_KEY blank in the
+  # secret to disable AI summaries entirely.
+  AI_PROVIDER: "openai"
+  AI_MODEL: "gpt-4o"
+  AI_FAST_MODEL: "gpt-4o-mini"
+  AI_API_BASE: ""
+  AI_MAX_TOKENS: "2000"
+  AI_TEMPERATURE: "0.2"
+
+---
+# 4. App Secret ---------------------------------------------------------------
+# FIXME: fill these in before applying. Keep a populated copy OUT of git.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rca-coe-secrets
+  namespace: your-namespace
+type: Opaque
+stringData:
+  # The DB is a container in the SAME pod, reached over loopback.
+  # Must match rca-coe-db-secret (user / password / db name).
+  DATABASE_URL: "postgresql+asyncpg://rca:changeme-rotate-me@localhost:5432/rca_coe"
+  # Slack bot token with scopes: chat:write, im:write, users:read.email (optional)
+  SLACK_BOT_TOKEN: ""
+  SLACK_SIGNING_SECRET: ""
+  # OpenAI-compatible API key for AI summary generation (optional).
+  AI_API_KEY: ""
+
+---
+# 5. App + DB Deployment (one pod, two containers) ----------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rca-coe-tracker
   namespace: your-namespace
   labels:
-    app: rca-coe-db
+    app: rca-coe-tracker
 spec:
-  serviceName: rca-coe-db
   replicas: 1
+  # Recreate (not RollingUpdate): a ReadWriteOnce PVC can only attach to one
+  # pod at a time, and two Postgres processes must never open the same data dir.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
-      app: rca-coe-db
+      app: rca-coe-tracker
   template:
     metadata:
       labels:
-        app: rca-coe-db
+        app: rca-coe-tracker
     spec:
-      # Pin the DB to on-demand nodes if your cluster has spot/preemptible
-      # nodes — eviction would interrupt writes. Add a nodeSelector here if
-      # needed.
+      # Uncomment if you build a single-arch (e.g. amd64) image and your cluster
+      # has mixed-architecture nodes, so the pod only lands on a matching node:
+      # nodeSelector:
+      #   kubernetes.io/arch: amd64
+      #
+      # fsGroup makes the mounted volume group-writable so Postgres can own its
+      # data dir. Keep this value stable across redeploys: changing it triggers a
+      # recursive re-chown of the volume on mount.
       securityContext:
         fsGroup: 999
       containers:
+        # ── Database ──────────────────────────────────────────────────────
         - name: postgres
           image: postgres:16-alpine
           imagePullPolicy: IfNotPresent
@@ -120,97 +206,10 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 5
-      volumes:
-        - name: pgdata
-          persistentVolumeClaim:
-            claimName: rca-coe-pgdata
-
----
-# 4. Postgres Service ---------------------------------------------------------
-apiVersion: v1
-kind: Service
-metadata:
-  name: rca-coe-db
-  namespace: your-namespace
-  labels:
-    app: rca-coe-db
-spec:
-  type: ClusterIP
-  selector:
-    app: rca-coe-db
-  ports:
-    - port: 5432
-      targetPort: 5432
-      name: postgres
-
----
-# 5. App ConfigMap ------------------------------------------------------------
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: rca-coe-config
-  namespace: your-namespace
-data:
-  # Public URL the identity proxy serves the app on.
-  APP_BASE_URL: "https://rca-coe.example.com"
-  CORS_ORIGINS: "https://rca-coe.example.com"
-  # DB (must match rca-coe-db-secret + DATABASE_URL in rca-coe-secrets)
-  DB_SCHEMA: "rca_coe"
-  DB_USER: "rca"
-  DB_NAME: "rca_coe"
-  # Comma-separated seed admin emails. Cannot be demoted from the UI.
-  ADMIN_EMAILS: "admin@example.com"
-  # AI summary on RCA closure (optional). Use a non-reasoning model.
-  AI_PROVIDER: "openai"
-  AI_MODEL: "gpt-4o"
-  AI_FAST_MODEL: "gpt-4o-mini"
-  AI_API_BASE: ""
-  AI_MAX_TOKENS: "2000"
-  AI_TEMPERATURE: "0.2"
-
----
-# 6. App Secret ---------------------------------------------------------------
-# FIXME: the four values below are placeholders. Fill them in before applying.
-# This file is gitignored — DO NOT commit a populated copy.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: rca-coe-secrets
-  namespace: your-namespace
-type: Opaque
-stringData:
-  # Must match rca-coe-db-secret.
-  DATABASE_URL: "postgresql+asyncpg://rca:changeme-rotate-me@rca-coe-db:5432/rca_coe"
-  # Slack bot token with scopes: chat:write, im:write, users:read.email
-  SLACK_BOT_TOKEN: ""
-  SLACK_SIGNING_SECRET: ""
-  # OpenAI-compatible API key for AI summary generation.
-  AI_API_KEY: ""
-
----
-# 7. App Deployment -----------------------------------------------------------
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: rca-coe-tracker
-  namespace: your-namespace
-  labels:
-    app: rca-coe-tracker
-spec:
-  replicas: 1
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app: rca-coe-tracker
-  template:
-    metadata:
-      labels:
-        app: rca-coe-tracker
-    spec:
-      containers:
-        - name: rca-coe-tracker
-          image: <your-registry>/rca-coe-tracker:0.1.0
+        # ── Application ───────────────────────────────────────────────────
+        - name: app
+          image: <your-registry>/rca-coe-tracker:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
               name: http
@@ -226,11 +225,14 @@ spec:
             limits:
               cpu: 1000m
               memory: 1Gi
+          # /api/health probes the DB (SELECT 1) and returns 503 until Postgres
+          # in the sibling container is accepting connections — so this also
+          # gates startup ordering without a separate initContainer.
           livenessProbe:
             httpGet:
               path: /api/health
               port: 8000
-            initialDelaySeconds: 10
+            initialDelaySeconds: 20
             periodSeconds: 30
             timeoutSeconds: 10
           readinessProbe:
@@ -239,9 +241,13 @@ spec:
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 10
+      volumes:
+        - name: pgdata
+          persistentVolumeClaim:
+            claimName: rca-coe-pgdata
 
 ---
-# 8. App Service --------------------------------------------------------------
+# 6. App Service --------------------------------------------------------------
 apiVersion: v1
 kind: Service
 metadata:

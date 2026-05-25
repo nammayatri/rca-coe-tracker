@@ -49,6 +49,7 @@ async def _serialize(db: AsyncSession, rca: RCA, user: UserCtx) -> RCAOut:
         id=rca.id,
         title=rca.title,
         body=rca.body,
+        content=rca.content,
         status=rca.status,
         severity=rca.severity,
         environment=rca.environment,
@@ -172,6 +173,7 @@ async def create_rca(
     rca = RCA(
         title=payload.title.strip(),
         body=payload.body or "",
+        content=payload.content,
         status=RCAStatus.OPEN,
         creator_email=user.email,
         severity=payload.severity,
@@ -236,6 +238,12 @@ async def patch_rca(
         rca.body = payload.body
 
     set_fields = payload.model_fields_set
+
+    # Structured payload is the source the editor re-hydrates from; `body` (above)
+    # is its rendered form. Persist it whenever sent; no separate history row —
+    # the body edit recorded above already captures "the content changed".
+    if "content" in set_fields:
+        rca.content = payload.content
 
     if "severity" in set_fields and payload.severity != rca.severity:
         _record_history(
