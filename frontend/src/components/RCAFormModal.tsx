@@ -103,7 +103,7 @@ function draftIsMeaningful(d: DraftShape): boolean {
   }
   if (c.timeline?.some((r) => r.time.trim() || r.event.trim())) return true;
   for (const cat of ACTION_CATEGORIES) {
-    if (c.actions?.[cat]?.some((r) => r.action.trim() || r.owner)) return true;
+    if (c.actions?.[cat]?.some((r) => r.action.trim() || r.owners.length)) return true;
   }
   return false;
 }
@@ -421,7 +421,7 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
     fivewhys: fiveWhys.trim().length > 0,
     resolution: immediateResolution.trim().length > 0,
     takeaways: !!(wentWell.trim() || couldBeBetter.trim() || gotLucky.trim()),
-    actions: Object.values(actions).some((rows) => rows.some((r) => r.action.trim() || r.owner)),
+    actions: Object.values(actions).some((rows) => rows.some((r) => r.action.trim() || r.owners.length)),
     timeline: timeline.some((r) => r.time.trim() || r.event.trim()),
   };
 
@@ -980,7 +980,7 @@ function ActionItemTable({
       <div className="hidden sm:flex items-center gap-2 px-1 mb-1.5 text-[11px] text-slate-400 uppercase tracking-wide">
         <div className="flex-1 min-w-0">Action Item</div>
         <div className="w-32 shrink-0">Status</div>
-        <div className="w-40 shrink-0">Owner</div>
+        <div className="w-48 shrink-0">Owners</div>
         <div className="w-7 shrink-0" />
       </div>
       <div className="space-y-2 sm:space-y-1.5">
@@ -989,21 +989,23 @@ function ActionItemTable({
             key={row.id}
             className="flex flex-col sm:flex-row sm:items-start gap-1.5 sm:gap-2 rounded-lg sm:rounded-none border sm:border-0 border-slate-200 p-2 sm:p-0"
           >
-            <AutoGrowField
+            {/* Multi-line action text (Enter = newline). Stored verbatim in
+                content; encoded as <br> in the markdown table body. */}
+            <AutoGrowTextarea
               value={row.action}
               onChange={(v) => onUpdate(idx, { action: v })}
-              placeholder="short description / tracker link"
+              placeholder="short description / tracker link (Enter for a new line)"
+              minHeight={38}
+              ariaLabel="Action item"
               className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-slate-300 text-sm soft-focus focus:outline-none focus:border-blue-400"
             />
-            <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 shrink-0">
+            <div className="flex items-start gap-1.5 sm:gap-2 min-w-0 shrink-0">
               <ActionStatusDropdown value={row.status} onChange={(s) => onUpdate(idx, { status: s })} />
-              <div className="w-40 sm:w-40 shrink-0 min-w-0">
+              <div className="w-48 sm:w-48 shrink-0 min-w-0">
                 <UserAutocomplete
-                  value={row.owner ? [row.owner] : []}
-                  onChange={(arr) => onUpdate(idx, { owner: arr[0] ?? null })}
-                  max={1}
-                  single
-                  placeholder="Owner"
+                  value={row.owners}
+                  onChange={(arr) => onUpdate(idx, { owners: arr })}
+                  placeholder="Owners"
                 />
               </div>
               <button

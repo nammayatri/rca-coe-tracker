@@ -35,7 +35,8 @@ export interface ActionItemRow {
   id: string;
   action: string;
   status: ActionStatus;
-  owner: User | null;
+  // One action item can have several owners.
+  owners: User[];
 }
 
 export interface TimelineRow {
@@ -64,7 +65,7 @@ export interface RCAContent {
   extra: string;
 }
 
-export const emptyActionRow = (): ActionItemRow => ({ id: rid(), action: '', status: 'Open', owner: null });
+export const emptyActionRow = (): ActionItemRow => ({ id: rid(), action: '', status: 'Open', owners: [] });
 export const emptyTimelineRow = (): TimelineRow => ({ id: rid(), time: '', event: '' });
 
 function emptyActions(seedRow = false): Record<ActionCategory, ActionItemRow[]> {
@@ -96,6 +97,9 @@ const ACTION_TIP =
   '_Tip: file each item in your tracker (Jira / Linear / GitHub) and paste the link in the action column._';
 
 const escCell = (s: string) => s.trim().replace(/\|/g, '\\|');
+// Action text may be multi-line; encode newlines as <br> so the markdown table
+// row stays intact (parseRCABody converts <br> back to newlines on the way in).
+const escActionCell = (s: string) => escCell(s).replace(/\r?\n/g, '<br>');
 
 // ───── content → markdown ─────
 
@@ -128,13 +132,13 @@ export function composeBody(content: RCAContent): string {
 
   const actionCategoryBlocks: string[] = [];
   for (const cat of ACTION_CATEGORIES) {
-    const rows = (content.actions[cat] || []).filter((r) => r.action.trim() || r.owner);
+    const rows = (content.actions[cat] || []).filter((r) => r.action.trim() || r.owners.length);
     if (rows.length === 0) continue;
     const lines: string[] = [`### ${cat}`, '', '| Action Item | Status | Owner |', '|---|---|---|'];
     for (const r of rows) {
-      const ownerText = r.owner ? r.owner.name : '';
+      const ownerText = r.owners.map((o) => o.name).filter(Boolean).join(', ');
       const status = (r.status || '').trim() || 'Open';
-      lines.push(`| ${escCell(r.action)} | ${escCell(status)} | ${escCell(ownerText)} |`);
+      lines.push(`| ${escActionCell(r.action)} | ${escCell(status)} | ${escCell(ownerText)} |`);
     }
     lines.push('', ACTION_TIP);
     actionCategoryBlocks.push(lines.join('\n'));
@@ -171,7 +175,7 @@ export function contentIsEmpty(c: RCAContent): boolean {
     !c.couldBeBetter.trim() &&
     !c.gotLucky.trim();
   const actionsEmpty = ACTION_CATEGORIES.every((cat) =>
-    (c.actions[cat] || []).every((r) => !r.action.trim() && !r.owner),
+    (c.actions[cat] || []).every((r) => !r.action.trim() && r.owners.length === 0),
   );
   const timelineEmpty = (c.timeline || []).every((r) => !r.time.trim() && !r.event.trim());
   return proseEmpty && actionsEmpty && timelineEmpty && !c.extra.trim();
@@ -211,6 +215,24 @@ function coerceOwner(raw: unknown): User | null {
   return null;
 }
 
+// Owners can arrive as: an array (new stored shape), a single object (legacy
+// stored single-owner shape), or a comma-separated name string (parsed from a
+// markdown table cell). Normalize all of them to a User[].
+function coerceOwners(raw: unknown): User[] {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) {
+    return raw.map(coerceOwner).filter((u): u is User => u !== null);
+  }
+  if (typeof raw === 'string') {
+    return raw
+      .split(',')
+      .map((s) => coerceOwner(s))
+      .filter((u): u is User => u !== null);
+  }
+  const one = coerceOwner(raw);
+  return one ? [one] : [];
+}
+
 // Hydrate from the forgiving markdown parser (legacy rows / raw-markdown edits).
 function contentFromParsed(parsed: ReturnType<typeof parseRCABody>): RCAContent {
   const actions = emptyActions(false);
@@ -218,7 +240,7 @@ function contentFromParsed(parsed: ReturnType<typeof parseRCABody>): RCAContent 
     const cat = mapCategory(g.category);
     for (const r of g.rows) {
       if (!r.action.trim()) continue;
-      actions[cat].push({ id: rid(), action: r.action, status: cleanStatus(r.status), owner: coerceOwner(r.owner) });
+      actions[cat].push({ id: rid(), action: r.action, status: cleanStatus(r.status), owners: coerceOwners(r.owner) });
     }
   }
 
@@ -257,12 +279,14 @@ function normalizeStored(raw: Record<string, unknown>): RCAContent {
     for (const r of rows) {
       const row = (r ?? {}) as Record<string, unknown>;
       const action = typeof row.action === 'string' ? row.action : '';
-      if (!action.trim() && !row.owner) continue;
+      // Back-compat: older rows stored a single `owner`; new rows store `owners`.
+      const ownersRaw = row.owners ?? row.owner;
+      if (!action.trim() && !ownersRaw) continue;
       actions[cat].push({
         id: rid(),
         action,
         status: cleanStatus(typeof row.status === 'string' ? row.status : ''),
-        owner: coerceOwner(row.owner),
+        owners: coerceOwners(ownersRaw),
       });
     }
   }
@@ -339,11 +363,11 @@ export function contentAfterBodyEdit(rca: RCA, newBody: string): Record<string, 
 // a plain JSON object. Typed as Record<string, unknown> so call sites need no
 // casts when assigning to the API's `content` field.
 export function serializeContent(c: RCAContent): Record<string, unknown> {
-  const actions: Record<string, { action: string; status: string; owner: User | null }[]> = {};
+  const actions: Record<string, { action: string; status: string; owners: User[] }[]> = {};
   for (const cat of ACTION_CATEGORIES) {
     actions[cat] = (c.actions[cat] || [])
-      .filter((r) => r.action.trim() || r.owner)
-      .map((r) => ({ action: r.action, status: (r.status || '').trim() || 'Open', owner: r.owner }));
+      .filter((r) => r.action.trim() || r.owners.length)
+      .map((r) => ({ action: r.action, status: (r.status || '').trim() || 'Open', owners: r.owners }));
   }
   return {
     tldr: c.tldr,

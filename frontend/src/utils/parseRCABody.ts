@@ -193,6 +193,8 @@ function parseActionItemTable(body: string): ActionItemRow[] {
       else if (kind === 'owner') owner = cell;
     });
     if (!action || isPlaceholder(action)) continue;
+    // Action cells encode multi-line text as <br> (see composeBody); restore it.
+    action = action.replace(/<br\s*\/?>/gi, '\n');
     rows.push({ action, status: status || 'Open', owner });
   }
   return rows;

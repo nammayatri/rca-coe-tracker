@@ -98,7 +98,7 @@ export default function ActionItemsTable({ groups }: ActionItemsTableProps) {
             const s = statusMeta(r.status);
             return (
               <tr key={i} className="border-t border-slate-100 align-top">
-                <td className="px-3 py-2.5 text-slate-700 leading-relaxed break-words">
+                <td className="px-3 py-2.5 text-slate-700 leading-relaxed break-words whitespace-pre-line">
                   {ticket && (
                     <a
                       href={ticket.url}
