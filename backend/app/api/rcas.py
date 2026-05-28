@@ -48,40 +48,73 @@ _CONTENT_SECTION_LABELS: list[tuple[str, str]] = [
 ]
 
 
+def _index_action_items(actions) -> dict[tuple[str, str, int], dict]:
+    """Build a {(category, action_text, occurrence) -> row} map. The occurrence
+    counter handles the (rare) case of duplicate action texts in one category.
+    Matching by action_text instead of by list index means reorder / insert /
+    remove no longer corrupts diffs (the old code spuriously flagged shifted
+    rows as changed)."""
+    out: dict[tuple[str, str, int], dict] = {}
+    if not isinstance(actions, dict):
+        return out
+    for cat, rows in actions.items():
+        if not isinstance(rows, list):
+            continue
+        seen: dict[str, int] = {}
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            text = (r.get("action") or "").strip()
+            if not text:
+                continue
+            occ = seen.get(text, 0)
+            seen[text] = occ + 1
+            out[(str(cat), text, occ)] = r
+    return out
+
+
+def _row_owner_emails(row) -> set[str]:
+    """Pull owner emails out of a row dict, handling old-shape `owner` and
+    new-shape `owners` interchangeably."""
+    if not isinstance(row, dict):
+        return set()
+    raw = row.get("owners") if "owners" in row else row.get("owner")
+    return _owner_emails(raw)
+
+
 def _describe_actions_diff(old_actions, new_actions) -> str | None:
     """Describe how action items changed. Special-cases the common case where
     only row statuses were toggled (e.g. marking an item Done in the dropdown)
     so the timeline reads 'marked "..." as Closed' instead of a generic
-    'Action Items'. Falls back to that generic label for structural changes
-    (add/remove/edit-text/owners/reorder)."""
-    o = old_actions or {}
-    n = new_actions or {}
+    'Action Items'. Identifies rows by (category, action_text) so reorder /
+    insert / remove no longer misclassify status changes."""
+    o = old_actions if isinstance(old_actions, dict) else {}
+    n = new_actions if isinstance(new_actions, dict) else {}
     if o == n:
         return None
-    if set(o.keys()) != set(n.keys()):
-        return "Action Items"
+
+    old_idx = _index_action_items(old_actions)
+    new_idx = _index_action_items(new_actions)
 
     status_changes: list[tuple[str, str]] = []  # (action text, new status)
     other_change = False
 
-    for cat in n.keys():
-        old_rows = o.get(cat) or []
-        new_rows = n.get(cat) or []
-        if len(old_rows) != len(new_rows):
+    for key in set(old_idx) | set(new_idx):
+        _cat, action_text, _occ = key
+        old_r = old_idx.get(key)
+        new_r = new_idx.get(key)
+        if old_r is None or new_r is None:
+            # Row added or removed (or moved between categories).
             other_change = True
             continue
-        for old_r, new_r in zip(old_rows, new_rows):
-            old_r = old_r if isinstance(old_r, dict) else {}
-            new_r = new_r if isinstance(new_r, dict) else {}
-            if old_r == new_r:
-                continue
-            old_strip = {k: v for k, v in old_r.items() if k != "status"}
-            new_strip = {k: v for k, v in new_r.items() if k != "status"}
-            if old_strip == new_strip and old_r.get("status") != new_r.get("status"):
-                action_text = (new_r.get("action") or old_r.get("action") or "").strip()
-                status_changes.append((action_text, str(new_r.get("status") or "Open")))
-            else:
-                other_change = True
+        if old_r == new_r:
+            continue
+        old_strip = {k: v for k, v in old_r.items() if k != "status"}
+        new_strip = {k: v for k, v in new_r.items() if k != "status"}
+        if old_strip == new_strip and old_r.get("status") != new_r.get("status"):
+            status_changes.append((action_text, str(new_r.get("status") or "Open")))
+        else:
+            other_change = True
 
     if status_changes and not other_change:
         if len(status_changes) == 1:
@@ -134,26 +167,18 @@ def _action_item_owner_assignments(
     old_actions, new_actions
 ) -> list[tuple[str, str]]:
     """Return (owner_email, action_text) tuples for owners that were newly
-    added to action items in this save (compared to old). One tuple per
-    (newly-assigned owner, item) pair. Used to DM each new assignee."""
-    o = old_actions if isinstance(old_actions, dict) else {}
-    n = new_actions if isinstance(new_actions, dict) else {}
+    added to action items in this save (compared to old). Matches rows by
+    (category, action_text, occurrence) so reorder / insert / remove do NOT
+    spuriously DM owners who were already on a row that merely shifted index."""
+    old_idx = _index_action_items(old_actions)
+    new_idx = _index_action_items(new_actions)
     added: list[tuple[str, str]] = []
-    for cat, new_rows in n.items():
-        if not isinstance(new_rows, list):
-            continue
-        old_rows = o.get(cat) or []
-        for i, new_r in enumerate(new_rows):
-            if not isinstance(new_r, dict):
-                continue
-            old_r = old_rows[i] if i < len(old_rows) and isinstance(old_rows[i], dict) else {}
-            new_emails = _owner_emails(new_r.get("owners") if "owners" in new_r else new_r.get("owner"))
-            old_emails = _owner_emails(old_r.get("owners") if "owners" in old_r else old_r.get("owner"))
-            action_text = (new_r.get("action") or "").strip()
-            if not action_text:
-                continue
-            for email in new_emails - old_emails:
-                added.append((email, action_text))
+    for key, new_r in new_idx.items():
+        _cat, action_text, _occ = key
+        new_emails = _row_owner_emails(new_r)
+        old_emails = _row_owner_emails(old_idx.get(key))
+        for email in new_emails - old_emails:
+            added.append((email, action_text))
     return added
 
 

@@ -265,6 +265,20 @@ async def _send_status_changed(
         logger.exception("notify_status_changed failed for rca=%s", rca_id)
 
 
+_DM_ITEM_MAX_LEN = 140
+_DM_ITEMS_SHOWN = 5
+
+
+def _dm_item_text(s: str) -> str:
+    """Collapse newlines/whitespace and cap length so an action item renders
+    as a single tidy bullet in Slack, even if the underlying text was multi-
+    line or very long."""
+    collapsed = " ".join((s or "").split())
+    if len(collapsed) <= _DM_ITEM_MAX_LEN:
+        return collapsed
+    return collapsed[: _DM_ITEM_MAX_LEN - 1].rstrip() + "…"
+
+
 def _action_items_assigned_attachment(
     rca: RCA, actor_mention: str, items: list[str]
 ) -> tuple[str, list[dict]]:
@@ -276,7 +290,7 @@ def _action_items_assigned_attachment(
     header = (
         f":clipboard: *You've been assigned {n} action item{'s' if n != 1 else ''}*"
     )
-    shown = items[:5]
+    shown = [_dm_item_text(it) for it in items[:_DM_ITEMS_SHOWN]]
     items_md = "\n".join(f"• {it}" for it in shown)
     if n > len(shown):
         items_md += f"\n• …and {n - len(shown)} more"
