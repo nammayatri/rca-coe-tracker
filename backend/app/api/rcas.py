@@ -119,7 +119,10 @@ def _describe_actions_diff(old_actions, new_actions) -> str | None:
     if status_changes and not other_change:
         if len(status_changes) == 1:
             text, new_status = status_changes[0]
-            short = (text[:50] + "…") if len(text) > 50 else text
+            # Collapse newlines/whitespace so a multi-line action description
+            # reads cleanly in the timeline (and in the title attribute).
+            collapsed = " ".join(text.split())
+            short = (collapsed[:50] + "…") if len(collapsed) > 50 else collapsed
             return f'marked "{short}" as {new_status}' if short else f"marked an action item as {new_status}"
         return f"updated {len(status_changes)} action item statuses"
 

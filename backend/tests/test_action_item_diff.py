@@ -93,6 +93,25 @@ def test_status_describe_single_flip_names_the_item():
     assert _describe_actions_diff(old, new) == 'marked "Raise pool" as Closed'
 
 
+def test_status_describe_collapses_multiline_action_in_label():
+    """A multi-line action description must read as a single tidy line in the
+    timeline label (and avoid breaking the title attribute)."""
+    old = {"Immediate Fixes": [_row("Raise pool size\nFrom 20 to 60 connections", status="Open")]}
+    new = {"Immediate Fixes": [_row("Raise pool size\nFrom 20 to 60 connections", status="Closed")]}
+    label = _describe_actions_diff(old, new)
+    assert label == 'marked "Raise pool size From 20 to 60 connections" as Closed'
+    assert "\n" not in label
+
+
+def test_status_describe_truncates_very_long_action_text():
+    long = "x" * 200
+    old = {"Immediate Fixes": [_row(long, status="Open")]}
+    new = {"Immediate Fixes": [_row(long, status="Closed")]}
+    label = _describe_actions_diff(old, new)
+    assert label.endswith('…" as Closed')
+    assert len(label) < 100
+
+
 def test_status_describe_multiple_flips_counts_them():
     old = {
         "Immediate Fixes": [

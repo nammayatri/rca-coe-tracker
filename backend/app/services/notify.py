@@ -329,6 +329,11 @@ async def _send_action_items_assigned(
         for email, action_text in assignments:
             by_owner.setdefault(email, []).append(action_text)
 
+        logger.info(
+            "notify_action_items_assigned firing rca=%s actor=%s recipients=%s",
+            rca_id, actor_email, sorted(by_owner.keys()),
+        )
+
         async with async_session_maker() as db:
             rca = (
                 await db.execute(select(RCA).where(RCA.id == rca_id))
@@ -353,8 +358,16 @@ async def _send_action_items_assigned(
                     fallback, attachments = _action_items_assigned_attachment(
                         rca, actor_mention, items
                     )
-                    await slack_service.post_dm(
+                    logger.info(
+                        "notify_action_items_assigned: posting DM to %s (slack_id=%s, items=%d)",
+                        owner_email, slack_id, len(items),
+                    )
+                    resp = await slack_service.post_dm(
                         slack_id, text=fallback, attachments=attachments
+                    )
+                    logger.info(
+                        "notify_action_items_assigned: post_dm to %s returned %s",
+                        owner_email, "ok" if resp else "None",
                     )
                 except Exception:
                     logger.exception(
