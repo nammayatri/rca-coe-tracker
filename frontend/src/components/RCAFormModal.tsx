@@ -158,7 +158,12 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
     setWentWell(c.wentWell);
     setCouldBeBetter(c.couldBeBetter);
     setGotLucky(c.gotLucky);
-    setActions(c.actions);
+    // Partition each category on load so done rows already sit at the bottom
+    // when an existing RCA opens for editing (matches the rule used by all the
+    // row mutations below).
+    const sorted = {} as Record<ActionCategory, ActionItemRow[]>;
+    for (const cat of ACTION_CATEGORIES) sorted[cat] = partitionDone(c.actions[cat] || []);
+    setActions(sorted);
     setTimeline(c.timeline);
     setExtra(c.extra);
   };
@@ -372,27 +377,40 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
     onClose();
   };
 
+  // Stable partition: not-done rows keep their order at the top, done rows
+  // sink to the bottom (also keeping their relative order). Applied after every
+  // mutation so the array (= what composeBody saves) always matches what's
+  // rendered. Drag-reorder still works freely WITHIN each block; trying to drag
+  // a done row above a not-done one will be auto-corrected on the next change.
+  const partitionDone = (arr: ActionItemRow[]): ActionItemRow[] => {
+    const open: ActionItemRow[] = [];
+    const done: ActionItemRow[] = [];
+    for (const r of arr) (isDoneStatus(r.status) ? done : open).push(r);
+    return [...open, ...done];
+  };
+
   const updateActionRow = (cat: ActionCategory, idx: number, patch: Partial<ActionItemRow>) => {
-    setActions((prev) => ({
-      ...prev,
-      [cat]: prev[cat].map((r, i) => (i === idx ? { ...r, ...patch } : r)),
-    }));
+    setActions((prev) => {
+      const next = prev[cat].map((r, i) => (i === idx ? { ...r, ...patch } : r));
+      return { ...prev, [cat]: partitionDone(next) };
+    });
   };
 
   const addActionRow = (cat: ActionCategory) => {
-    setActions((prev) => ({ ...prev, [cat]: [...prev[cat], emptyActionRow()] }));
+    setActions((prev) => ({ ...prev, [cat]: partitionDone([...prev[cat], emptyActionRow()]) }));
   };
 
   const removeActionRow = (cat: ActionCategory, idx: number) => {
     setActions((prev) => {
-      const next = prev[cat].filter((_, i) => i !== idx);
-      return { ...prev, [cat]: next.length === 0 ? [emptyActionRow()] : next };
+      const filtered = prev[cat].filter((_, i) => i !== idx);
+      const next = filtered.length === 0 ? [emptyActionRow()] : filtered;
+      return { ...prev, [cat]: partitionDone(next) };
     });
   };
 
-  // Move an action row within its category (drag-to-reorder / keyboard). The
-  // array order is what composeBody emits and parseRCABody reads back, so this
-  // is all that's needed for the new order to persist.
+  // Drag-to-reorder / keyboard. The array order is what composeBody emits and
+  // parseRCABody reads back. After the reorder we re-partition so done rows stay
+  // at the bottom even if the user dropped one above a not-done row.
   const reorderActionRow = (cat: ActionCategory, from: number, to: number) => {
     setActions((prev) => {
       const arr = prev[cat];
@@ -400,7 +418,7 @@ export default function RCAFormModal({ open, onClose, mode, rca }: RCAFormModalP
       const next = [...arr];
       const [moved] = next.splice(from, 1);
       next.splice(to, 0, moved);
-      return { ...prev, [cat]: next };
+      return { ...prev, [cat]: partitionDone(next) };
     });
   };
 
@@ -1161,14 +1179,28 @@ function ActionItemTable({
   );
 }
 
-const ACTION_STATUS_DOT: Record<string, string> = {
-  Open: 'bg-blue-500',
-  'In Progress': 'bg-amber-500',
-  'To Be Tested': 'bg-violet-500',
-  Closed: 'bg-slate-400',
-};
-// Unknown/custom statuses (e.g. imported "Blocked") get a neutral dot.
-const statusDot = (s: string) => ACTION_STATUS_DOT[s] ?? 'bg-slate-300';
+// Shared status palette: matches the detail view's ActionItemsTable so a row's
+// color/label is identical whether you're viewing or editing.
+interface StatusPalette { dot: string; bg: string; text: string; ring: string; }
+function statusPalette(raw: string): StatusPalette {
+  const t = (raw || '').toLowerCase().trim();
+  if (t.includes('done') || t.includes('complete') || t === 'closed') {
+    return { dot: 'bg-emerald-500', bg: 'bg-emerald-50', text: 'text-emerald-700', ring: 'ring-emerald-200' };
+  }
+  if (t.includes('progress') || t === 'wip') {
+    return { dot: 'bg-amber-500', bg: 'bg-amber-50', text: 'text-amber-700', ring: 'ring-amber-200' };
+  }
+  if (t.includes('test')) {
+    return { dot: 'bg-violet-500', bg: 'bg-violet-50', text: 'text-violet-700', ring: 'ring-violet-200' };
+  }
+  if (t.includes('block')) {
+    return { dot: 'bg-red-500', bg: 'bg-red-50', text: 'text-red-700', ring: 'ring-red-200' };
+  }
+  if (!t || t.includes('open')) {
+    return { dot: 'bg-blue-500', bg: 'bg-blue-50', text: 'text-blue-700', ring: 'ring-blue-200' };
+  }
+  return { dot: 'bg-slate-400', bg: 'bg-slate-100', text: 'text-slate-700', ring: 'ring-slate-200' };
+}
 
 function ActionStatusDropdown({
   value,
@@ -1182,17 +1214,18 @@ function ActionStatusDropdown({
   // shows and stays selectable, so it's never silently rewritten.
   const isCustom = !ACTION_STATUS_PRESETS.includes(display as (typeof ACTION_STATUS_PRESETS)[number]);
   const items = isCustom ? [display, ...ACTION_STATUS_PRESETS] : [...ACTION_STATUS_PRESETS];
+  const p = statusPalette(display);
   const trigger = (
     <button
       type="button"
       aria-label={`Status: ${display}`}
-      className="w-32 shrink-0 inline-flex items-center justify-between gap-1.5 px-2.5 py-2 rounded-lg border border-slate-300 text-sm bg-white text-slate-700 hover:border-slate-400 transition-all duration-150"
+      className={`w-32 shrink-0 inline-flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-full text-[12.5px] font-medium ring-1 ring-inset transition-colors ${p.bg} ${p.text} ${p.ring} hover:brightness-95`}
     >
       <span className="inline-flex items-center gap-1.5 truncate">
-        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot(display)}`} />
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.dot}`} />
         <span className="truncate">{display}</span>
       </span>
-      <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+      <ChevronDown className="w-3.5 h-3.5 opacity-60 shrink-0" />
     </button>
   );
 
@@ -1200,19 +1233,22 @@ function ActionStatusDropdown({
     <Dropdown trigger={trigger} width={170}>
       {(close) => (
         <>
-          {items.map((s) => (
-            <DropdownItem
-              key={s}
-              selected={s === display}
-              onSelect={() => {
-                onChange(s);
-                close();
-              }}
-              leading={<span className={`w-1.5 h-1.5 rounded-full ${statusDot(s)}`} />}
-            >
-              {s}
-            </DropdownItem>
-          ))}
+          {items.map((s) => {
+            const ip = statusPalette(s);
+            return (
+              <DropdownItem
+                key={s}
+                selected={s === display}
+                onSelect={() => {
+                  onChange(s);
+                  close();
+                }}
+                leading={<span className={`w-1.5 h-1.5 rounded-full ${ip.dot}`} />}
+              >
+                <span className={ip.text}>{s}</span>
+              </DropdownItem>
+            );
+          })}
         </>
       )}
     </Dropdown>

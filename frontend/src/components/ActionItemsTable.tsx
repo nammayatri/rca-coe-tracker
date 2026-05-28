@@ -19,14 +19,26 @@ function categoryToType(category: string): TypeMeta {
   return { label: 'Action', cls: 'bg-slate-100 text-slate-700 ring-slate-200/70' };
 }
 
-function statusMeta(raw: string): { label: string; dot: string; text: string } {
+interface StatusMeta { label: string; dot: string; text: string; bg: string; ring: string; }
+
+function statusMeta(raw: string): StatusMeta {
   const t = (raw || '').toLowerCase().replace(/[●○•]/g, '').trim();
-  if (t.includes('done') || t.includes('complete') || t === 'closed') return { label: 'Done', dot: 'bg-emerald-500', text: 'text-emerald-700' };
-  if (t.includes('progress') || t === 'wip') return { label: 'In Progress', dot: 'bg-amber-500', text: 'text-amber-700' };
-  if (t.includes('test')) return { label: 'To Be Tested', dot: 'bg-blue-500', text: 'text-blue-700' };
-  if (t.includes('block')) return { label: 'Blocked', dot: 'bg-red-500', text: 'text-red-700' };
-  if (!t || t.includes('open') || t === '—' || t === '-') return { label: 'Open', dot: 'bg-slate-300', text: 'text-slate-600' };
-  return { label: raw, dot: 'bg-slate-300', text: 'text-slate-600' };
+  if (t.includes('done') || t.includes('complete') || t === 'closed') {
+    return { label: 'Done', dot: 'bg-emerald-500', text: 'text-emerald-700', bg: 'bg-emerald-50', ring: 'ring-emerald-200' };
+  }
+  if (t.includes('progress') || t === 'wip') {
+    return { label: 'In Progress', dot: 'bg-amber-500', text: 'text-amber-700', bg: 'bg-amber-50', ring: 'ring-amber-200' };
+  }
+  if (t.includes('test')) {
+    return { label: 'To Be Tested', dot: 'bg-violet-500', text: 'text-violet-700', bg: 'bg-violet-50', ring: 'ring-violet-200' };
+  }
+  if (t.includes('block')) {
+    return { label: 'Blocked', dot: 'bg-red-500', text: 'text-red-700', bg: 'bg-red-50', ring: 'ring-red-200' };
+  }
+  if (!t || t.includes('open') || t === '—' || t === '-') {
+    return { label: 'Open', dot: 'bg-blue-500', text: 'text-blue-700', bg: 'bg-blue-50', ring: 'ring-blue-200' };
+  }
+  return { label: raw, dot: 'bg-slate-400', text: 'text-slate-700', bg: 'bg-slate-100', ring: 'ring-slate-200' };
 }
 
 const TICKET_LINK_RE = /\[([A-Z][A-Z0-9_-]*-\d+)\]\((https?:\/\/[^)]+)\)/;
@@ -137,7 +149,9 @@ export default function ActionItemsTable({ groups }: ActionItemsTableProps) {
                 </td>
                 <td className={`px-3 py-2.5 ${done ? 'opacity-60' : ''}`}>{renderOwner(r.owner)}</td>
                 <td className="px-3 py-2.5">
-                  <span className={`inline-flex items-center gap-1.5 text-[11.5px] ${s.text}`}>
+                  <span
+                    className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium ring-1 ring-inset ${s.bg} ${s.text} ${s.ring}`}
+                  >
                     <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} aria-hidden />
                     {s.label}
                   </span>
