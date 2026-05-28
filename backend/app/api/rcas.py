@@ -29,6 +29,33 @@ router = APIRouter(prefix="/api/rcas", tags=["rcas"])
 _MAX_CONTENT_BYTES = 500 * 1024
 
 
+# Human labels for the structured content sections, used to describe a body
+# edit in the activity timeline ("edited TL;DR, Summary, Action Items" instead
+# of an opaque "edited the content"). Order matches the form's section order.
+_CONTENT_SECTION_LABELS: list[tuple[str, str]] = [
+    ("tldr", "TL;DR"),
+    ("summary", "Summary"),
+    ("impact", "Impact"),
+    ("consequence", "Consequence"),
+    ("fiveWhys", "Five Whys"),
+    ("immediateResolution", "Resolution"),
+    ("wentWell", "What went well"),
+    ("couldBeBetter", "What could be better"),
+    ("gotLucky", "Got lucky"),
+    ("actions", "Action Items"),
+    ("timeline", "Timeline"),
+    ("extra", "Other notes"),
+]
+
+
+def _diff_content_sections(old: dict | None, new: dict | None) -> list[str]:
+    """Return the human labels of structured content sections whose value
+    differs between old and new. Handles missing keys and either side being
+    None (legacy rows / first-time structured save)."""
+    o, n = old or {}, new or {}
+    return [label for key, label in _CONTENT_SECTION_LABELS if o.get(key) != n.get(key)]
+
+
 def _check_content_size(content: dict | None) -> None:
     if content is None:
         return
@@ -276,7 +303,18 @@ async def patch_rca(
             rca.title = new_title
 
     if payload.body is not None and payload.body != rca.body:
-        _record_history(db, rca.id, user, "edited", from_value="body", to_value=None)
+        # If the client also sent `content` (the structured payload, normal for
+        # form saves), figure out which named sections actually changed and
+        # stash them in to_value so the activity timeline can name them.
+        # Read rca.content BEFORE the later block overwrites it.
+        old_content = rca.content if isinstance(rca.content, dict) else None
+        new_content = payload.content if isinstance(payload.content, dict) else None
+        sections = _diff_content_sections(old_content, new_content) if new_content else []
+        _record_history(
+            db, rca.id, user, "edited",
+            from_value="body",
+            to_value=(", ".join(sections) if sections else None),
+        )
         rca.body = payload.body
 
     set_fields = payload.model_fields_set

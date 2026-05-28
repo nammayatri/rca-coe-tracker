@@ -86,7 +86,10 @@ function describeAction(h: RCAHistoryEntry): string {
         case 'title':
           return v ? `renamed to "${truncate(v, 80)}"` : 'edited the title';
         case 'body':
-          return 'edited the content';
+          // Backend populates to_value with the changed section names when
+          // possible ("TL;DR, Summary, Action Items"). Falls back to the
+          // generic message only when no structured diff was available.
+          return v ? `edited ${truncate(v, 120)}` : 'edited the content';
         case 'severity':
           return v ? `changed severity → ${v.toUpperCase()}` : 'cleared severity';
         case 'environment':
