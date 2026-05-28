@@ -66,6 +66,11 @@ export default function ActionItemsTable({ groups }: ActionItemsTableProps) {
   }
   if (rows.length === 0) return null;
 
+  // Move completed items to the end so "what's left to do" is visible at a glance.
+  // Stable sort: not-done rows keep their original order, done rows trail behind.
+  const isDone = (r: { status: string }) => statusMeta(r.status).label === 'Done';
+  rows.sort((a, b) => Number(isDone(a)) - Number(isDone(b)));
+
   return (
     <div className="rounded-xl ring-1 ring-slate-200/70 overflow-hidden bg-white">
       <table className="w-full text-[13px] table-fixed">
@@ -96,15 +101,27 @@ export default function ActionItemsTable({ groups }: ActionItemsTableProps) {
             const { ticket, rest } = splitTicket(r.action);
             const t = categoryToType(r.category);
             const s = statusMeta(r.status);
+            const done = s.label === 'Done';
             return (
-              <tr key={i} className="border-t border-slate-100 align-top">
-                <td className="px-3 py-2.5 text-slate-700 leading-relaxed break-words whitespace-pre-line">
+              <tr
+                key={i}
+                className={`border-t border-slate-100 align-top transition-colors ${done ? 'bg-slate-50/60' : ''}`}
+              >
+                <td
+                  className={`px-3 py-2.5 leading-relaxed break-words whitespace-pre-line ${
+                    done ? 'text-slate-400 line-through' : 'text-slate-700'
+                  }`}
+                >
                   {ticket && (
                     <a
                       href={ticket.url}
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex items-center text-[11.5px] font-medium text-blue-700 bg-blue-50 ring-1 ring-blue-100 rounded px-1.5 py-0.5 mr-2 hover:bg-blue-100 transition-colors"
+                      className={`inline-flex items-center text-[11.5px] font-medium rounded px-1.5 py-0.5 mr-2 ring-1 transition-colors no-underline ${
+                        done
+                          ? 'text-slate-400 bg-slate-100 ring-slate-200'
+                          : 'text-blue-700 bg-blue-50 ring-blue-100 hover:bg-blue-100'
+                      }`}
                     >
                       {ticket.id}
                     </a>
@@ -113,12 +130,12 @@ export default function ActionItemsTable({ groups }: ActionItemsTableProps) {
                 </td>
                 <td className="px-3 py-2.5">
                   <span
-                    className={`inline-flex items-center text-[11px] font-medium px-2 py-0.5 rounded-full ring-1 ${t.cls}`}
+                    className={`inline-flex items-center text-[11px] font-medium px-2 py-0.5 rounded-full ring-1 ${t.cls} ${done ? 'opacity-60' : ''}`}
                   >
                     {t.label}
                   </span>
                 </td>
-                <td className="px-3 py-2.5">{renderOwner(r.owner)}</td>
+                <td className={`px-3 py-2.5 ${done ? 'opacity-60' : ''}`}>{renderOwner(r.owner)}</td>
                 <td className="px-3 py-2.5">
                   <span className={`inline-flex items-center gap-1.5 text-[11.5px] ${s.text}`}>
                     <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} aria-hidden />

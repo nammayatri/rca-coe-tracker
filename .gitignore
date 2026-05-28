@@ -56,3 +56,4 @@ Thumbs.db
 # --- Local Postgres data (if someone bind-mounts instead of using the named volume) ---
 pgdata/
 *.sql.bak
+prodk8s/deployment.eks-prod.yaml

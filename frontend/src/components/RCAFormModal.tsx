@@ -1023,6 +1023,13 @@ function BodyTextarea({
   );
 }
 
+// Match the display's notion of "done" so legacy/custom statuses (Done, Closed,
+// Complete, Completed) all get the struck-through treatment.
+function isDoneStatus(s: string): boolean {
+  const t = (s || '').toLowerCase().trim();
+  return t === 'closed' || t.includes('done') || t.includes('complete');
+}
+
 function ActionItemTable({
   category,
   rows,
@@ -1112,7 +1119,9 @@ function ActionItemTable({
               placeholder="short description / tracker link (Enter for a new line)"
               minHeight={38}
               ariaLabel="Action item"
-              className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-slate-300 text-sm soft-focus focus:outline-none focus:border-blue-400"
+              className={`flex-1 min-w-0 px-3 py-2 rounded-lg border border-slate-300 text-sm soft-focus focus:outline-none focus:border-blue-400 ${
+                isDoneStatus(row.status) ? 'line-through text-slate-400' : ''
+              }`}
             />
             <div className="flex items-start gap-1.5 sm:gap-2 min-w-0 shrink-0">
               <ActionStatusDropdown value={row.status} onChange={(s) => onUpdate(idx, { status: s })} />
