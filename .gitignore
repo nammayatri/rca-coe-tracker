@@ -57,3 +57,4 @@ Thumbs.db
 pgdata/
 *.sql.bak
 prodk8s/deployment.eks-prod.yaml
+.claude/settings.local.json
