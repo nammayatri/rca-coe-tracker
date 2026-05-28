@@ -40,33 +40,71 @@ function shortHandle(value: string | null | undefined): string {
   return value.split('@')[0] || value;
 }
 
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s;
+}
+
+// The app is IST-first (the AI summary writes in IST); render incident
+// timestamps the same way so the timeline reads naturally.
+function formatIstTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return (
+    d.toLocaleString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      day: 'numeric',
+      month: 'short',
+      timeZone: 'Asia/Kolkata',
+    }) + ' IST'
+  );
+}
+
+// Each line should answer "what did they change?". Where the data lets us be
+// specific (old/new status, new severity, new time), we are; for the body
+// (no diff stored) we say "edited the content" instead of the older opaque
+// "updated description".
 function describeAction(h: RCAHistoryEntry): string {
   switch (h.action) {
     case 'created':
       return 'created this RCA';
     case 'status_changed': {
-      const to = h.to_value ? humanizeStatus(h.to_value) : '';
-      return to ? `changed status to ${to}` : 'changed status';
+      const from = h.from_value ? humanizeStatus(h.from_value) : null;
+      const to = h.to_value ? humanizeStatus(h.to_value) : null;
+      if (from && to) return `moved status from ${from} → ${to}`;
+      if (to) return `changed status to ${to}`;
+      return 'changed status';
     }
     case 'assigned':
       return `assigned ${shortHandle(h.to_value)}`;
     case 'unassigned':
       return `unassigned ${shortHandle(h.to_value ?? h.from_value)}`;
     case 'edited': {
-      const field = h.from_value ? FIELD_HUMAN[h.from_value] ?? h.from_value : 'the RCA';
-      if (h.from_value === 'severity' && h.to_value) {
-        return `changed severity to ${h.to_value.toUpperCase()}`;
+      const f = h.from_value;
+      const v = h.to_value;
+      switch (f) {
+        case 'title':
+          return v ? `renamed to "${truncate(v, 80)}"` : 'edited the title';
+        case 'body':
+          return 'edited the content';
+        case 'severity':
+          return v ? `changed severity → ${v.toUpperCase()}` : 'cleared severity';
+        case 'environment':
+          return v ? `set environment → ${v}` : 'cleared environment';
+        case 'services_affected':
+          return v ? `updated affected services → ${v}` : 'cleared affected services';
+        case 'incident_started_at':
+        case 'incident_detected_at':
+        case 'incident_mitigated_at':
+        case 'incident_resolved_at': {
+          const label = FIELD_HUMAN[f] ?? f;
+          return v ? `set ${label} → ${formatIstTime(v)}` : `cleared ${label}`;
+        }
+        default: {
+          const label = f ? (FIELD_HUMAN[f] ?? f) : 'a field';
+          return v ? `updated ${label} → ${v}` : `updated ${label}`;
+        }
       }
-      if (h.from_value === 'environment' && h.to_value) {
-        return `set environment to ${h.to_value}`;
-      }
-      if (h.from_value === 'services_affected' && h.to_value) {
-        return `updated services to ${h.to_value}`;
-      }
-      if (h.from_value === 'title' && h.to_value) {
-        return `renamed to "${h.to_value}"`;
-      }
-      return `updated ${field}`;
     }
     case 'deleted':
       return 'deleted the RCA';
