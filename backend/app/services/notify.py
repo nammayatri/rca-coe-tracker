@@ -326,10 +326,10 @@ async def _send_action_items_assigned(
 
             for owner_email, items in by_owner.items():
                 # Isolate per recipient: one failure must not abort the batch.
+                # NOTE: self-assignment IS DM'd here (unlike RCA-level notify_assigned),
+                # because action items are personal todos and the DM is a useful
+                # "you took this on" reminder + a one-click link back to the RCA.
                 try:
-                    if owner_email == actor_email:
-                        # Self-assignment: skip — they already know.
-                        continue
                     slack_id = await _resolve_slack_id(db, owner_email)
                     if not slack_id:
                         logger.info(
