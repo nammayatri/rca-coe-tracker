@@ -110,6 +110,53 @@ def _diff_content_sections(old: dict | None, new: dict | None) -> list[str]:
     return out
 
 
+def _owner_emails(raw) -> set[str]:
+    """Normalize an action-item owner field (User | None | User[] | comma string)
+    into a set of lowercased emails. Owners without an email (e.g. parsed from a
+    name-only markdown table cell) are skipped because we can't DM them."""
+    if not raw:
+        return set()
+    if isinstance(raw, dict):
+        e = (raw.get("email") or "").strip().lower()
+        return {e} if e else set()
+    if isinstance(raw, list):
+        out: set[str] = set()
+        for o in raw:
+            if isinstance(o, dict):
+                e = (o.get("email") or "").strip().lower()
+                if e:
+                    out.add(e)
+        return out
+    return set()
+
+
+def _action_item_owner_assignments(
+    old_actions, new_actions
+) -> list[tuple[str, str]]:
+    """Return (owner_email, action_text) tuples for owners that were newly
+    added to action items in this save (compared to old). One tuple per
+    (newly-assigned owner, item) pair. Used to DM each new assignee."""
+    o = old_actions if isinstance(old_actions, dict) else {}
+    n = new_actions if isinstance(new_actions, dict) else {}
+    added: list[tuple[str, str]] = []
+    for cat, new_rows in n.items():
+        if not isinstance(new_rows, list):
+            continue
+        old_rows = o.get(cat) or []
+        for i, new_r in enumerate(new_rows):
+            if not isinstance(new_r, dict):
+                continue
+            old_r = old_rows[i] if i < len(old_rows) and isinstance(old_rows[i], dict) else {}
+            new_emails = _owner_emails(new_r.get("owners") if "owners" in new_r else new_r.get("owner"))
+            old_emails = _owner_emails(old_r.get("owners") if "owners" in old_r else old_r.get("owner"))
+            action_text = (new_r.get("action") or "").strip()
+            if not action_text:
+                continue
+            for email in new_emails - old_emails:
+                added.append((email, action_text))
+    return added
+
+
 def _check_content_size(content: dict | None) -> None:
     if content is None:
         return
@@ -318,6 +365,12 @@ async def create_rca(
 
     if cleaned_emails:
         notify.notify_assigned(rca.id, user.email, user.name, cleaned_emails)
+    # DM each owner newly assigned to any action item (old is empty on create).
+    ai_assignments = _action_item_owner_assignments(
+        None, (payload.content or {}).get("actions") if isinstance(payload.content, dict) else None
+    )
+    if ai_assignments:
+        notify.notify_action_items_assigned(rca.id, user.email, user.name, ai_assignments)
     return await _serialize(db, rca, user)
 
 
@@ -347,6 +400,11 @@ async def patch_rca(
     assignee_emails = {a.user_email for a in rca.assignees}
     if not can_edit_rca(user, rca.creator_email, assignee_emails):
         raise HTTPException(status_code=403, detail="not allowed")
+
+    # Capture pre-patch action items so we can DM whoever gets newly assigned.
+    pre_action_items = (
+        rca.content.get("actions") if isinstance(rca.content, dict) else None
+    )
 
     status_transition: tuple[RCAStatus, RCAStatus] | None = None
 
@@ -442,6 +500,14 @@ async def patch_rca(
         notify.notify_status_changed(rca.id, user.email, user.name, old, new)
         if new in (RCAStatus.RCA_DONE, RCAStatus.CLOSED):
             ai_summary.maybe_generate_on_close(rca.id)
+
+    # DM whoever was newly assigned to an action item in this save.
+    post_action_items = (
+        payload.content.get("actions") if isinstance(payload.content, dict) else None
+    )
+    ai_assignments = _action_item_owner_assignments(pre_action_items, post_action_items)
+    if ai_assignments:
+        notify.notify_action_items_assigned(rca.id, user.email, user.name, ai_assignments)
 
     return await _serialize(db, rca, user)
 

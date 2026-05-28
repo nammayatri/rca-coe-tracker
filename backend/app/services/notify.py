@@ -265,6 +265,93 @@ async def _send_status_changed(
         logger.exception("notify_status_changed failed for rca=%s", rca_id)
 
 
+def _action_items_assigned_attachment(
+    rca: RCA, actor_mention: str, items: list[str]
+) -> tuple[str, list[dict]]:
+    """Slack attachment for the 'you've been assigned an action item' DM.
+    Mirrors the look of the RCA-assignment / status-change attachments."""
+    url = _rca_url(rca.id)
+    status_label = STATUS_LABELS.get(rca.status, str(rca.status))
+    n = len(items)
+    header = (
+        f":clipboard: *You've been assigned {n} action item{'s' if n != 1 else ''}*"
+    )
+    shown = items[:5]
+    items_md = "\n".join(f"• {it}" for it in shown)
+    if n > len(shown):
+        items_md += f"\n• …and {n - len(shown)} more"
+    fallback = f"Action items assigned to you in: {rca.title}"
+    attachments = [
+        {
+            "color": "#10B981",  # emerald, distinct from the blue assignment DM
+            "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": header}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f">{rca.title}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": items_md}},
+                {
+                    "type": "section",
+                    "fields": [
+                        {"type": "mrkdwn", "text": f"*RCA status:* `{status_label}`"},
+                        {"type": "mrkdwn", "text": f"*Assigned by:* {actor_mention}"},
+                    ],
+                },
+                _open_button_block(url),
+            ],
+        }
+    ]
+    return fallback, attachments
+
+
+async def _send_action_items_assigned(
+    rca_id: int,
+    actor_email: str,
+    actor_name: str,
+    assignments: list[tuple[str, str]],
+) -> None:
+    try:
+        # Group items by recipient email so one person gets one consolidated DM
+        # even if they were newly assigned to several items in the same save.
+        by_owner: dict[str, list[str]] = {}
+        for email, action_text in assignments:
+            by_owner.setdefault(email, []).append(action_text)
+
+        async with async_session_maker() as db:
+            rca = (
+                await db.execute(select(RCA).where(RCA.id == rca_id))
+            ).scalar_one_or_none()
+            if not rca:
+                return
+            actor_slack_id = await _resolve_slack_id(db, actor_email)
+            actor_mention = _mention(actor_slack_id, actor_name)
+
+            for owner_email, items in by_owner.items():
+                # Isolate per recipient: one failure must not abort the batch.
+                try:
+                    if owner_email == actor_email:
+                        # Self-assignment: skip — they already know.
+                        continue
+                    slack_id = await _resolve_slack_id(db, owner_email)
+                    if not slack_id:
+                        logger.info(
+                            "No slack id for %s; skipping action-item DM", owner_email
+                        )
+                        continue
+                    fallback, attachments = _action_items_assigned_attachment(
+                        rca, actor_mention, items
+                    )
+                    await slack_service.post_dm(
+                        slack_id, text=fallback, attachments=attachments
+                    )
+                except Exception:
+                    logger.exception(
+                        "notify_action_items_assigned: failed to DM %s for rca=%s",
+                        owner_email,
+                        rca_id,
+                    )
+    except Exception:
+        logger.exception("notify_action_items_assigned failed for rca=%s", rca_id)
+
+
 def notify_assigned(
     rca_id: int, actor_email: str, actor_name: str, added_emails: list[str]
 ) -> None:
@@ -277,3 +364,14 @@ def notify_status_changed(
     rca_id: int, actor_email: str, actor_name: str, old: RCAStatus, new: RCAStatus
 ) -> None:
     _spawn(_send_status_changed(rca_id, actor_email, actor_name, old, new))
+
+
+def notify_action_items_assigned(
+    rca_id: int,
+    actor_email: str,
+    actor_name: str,
+    assignments: list[tuple[str, str]],
+) -> None:
+    if not assignments:
+        return
+    _spawn(_send_action_items_assigned(rca_id, actor_email, actor_name, assignments))
