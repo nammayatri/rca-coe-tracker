@@ -48,12 +48,66 @@ _CONTENT_SECTION_LABELS: list[tuple[str, str]] = [
 ]
 
 
+def _describe_actions_diff(old_actions, new_actions) -> str | None:
+    """Describe how action items changed. Special-cases the common case where
+    only row statuses were toggled (e.g. marking an item Done in the dropdown)
+    so the timeline reads 'marked "..." as Closed' instead of a generic
+    'Action Items'. Falls back to that generic label for structural changes
+    (add/remove/edit-text/owners/reorder)."""
+    o = old_actions or {}
+    n = new_actions or {}
+    if o == n:
+        return None
+    if set(o.keys()) != set(n.keys()):
+        return "Action Items"
+
+    status_changes: list[tuple[str, str]] = []  # (action text, new status)
+    other_change = False
+
+    for cat in n.keys():
+        old_rows = o.get(cat) or []
+        new_rows = n.get(cat) or []
+        if len(old_rows) != len(new_rows):
+            other_change = True
+            continue
+        for old_r, new_r in zip(old_rows, new_rows):
+            old_r = old_r if isinstance(old_r, dict) else {}
+            new_r = new_r if isinstance(new_r, dict) else {}
+            if old_r == new_r:
+                continue
+            old_strip = {k: v for k, v in old_r.items() if k != "status"}
+            new_strip = {k: v for k, v in new_r.items() if k != "status"}
+            if old_strip == new_strip and old_r.get("status") != new_r.get("status"):
+                action_text = (new_r.get("action") or old_r.get("action") or "").strip()
+                status_changes.append((action_text, str(new_r.get("status") or "Open")))
+            else:
+                other_change = True
+
+    if status_changes and not other_change:
+        if len(status_changes) == 1:
+            text, new_status = status_changes[0]
+            short = (text[:50] + "…") if len(text) > 50 else text
+            return f'marked "{short}" as {new_status}' if short else f"marked an action item as {new_status}"
+        return f"updated {len(status_changes)} action item statuses"
+
+    return "Action Items"
+
+
 def _diff_content_sections(old: dict | None, new: dict | None) -> list[str]:
     """Return the human labels of structured content sections whose value
-    differs between old and new. Handles missing keys and either side being
-    None (legacy rows / first-time structured save)."""
+    differs between old and new. Special-cases `actions` to surface status-only
+    toggles (e.g. 'marked "..." as Closed') instead of just "Action Items"."""
     o, n = old or {}, new or {}
-    return [label for key, label in _CONTENT_SECTION_LABELS if o.get(key) != n.get(key)]
+    out: list[str] = []
+    for key, label in _CONTENT_SECTION_LABELS:
+        if key == "actions":
+            desc = _describe_actions_diff(o.get(key), n.get(key))
+            if desc:
+                out.append(desc)
+        else:
+            if o.get(key) != n.get(key):
+                out.append(label)
+    return out
 
 
 def _check_content_size(content: dict | None) -> None:
